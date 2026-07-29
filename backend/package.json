@@ -1,0 +1,42 @@
+{
+  "name": "@allsports/backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/app.ts",
+    "build": "tsc",
+    "start": "node dist/app.js",
+    "db:migrate": "node-pg-migrate up",
+    "db:migrate:down": "node-pg-migrate down",
+    "db:seed": "tsx src/shared/db/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "fastify": "^4.27.0",
+    "@fastify/cors": "^9.0.1",
+    "@fastify/helmet": "^11.1.1",
+    "@fastify/jwt": "^8.0.1",
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/swagger": "^8.14.0",
+    "@fastify/swagger-ui": "^3.0.0",
+    "firebase-admin": "^12.0.0",
+    "pg": "^8.11.3",
+    "kysely": "^0.27.3",
+    "ioredis": "^5.3.2",
+    "uuid": "^9.0.0",
+    "zod": "^3.22.4",
+    "dotenv": "^16.4.5",
+    "pino": "^9.1.0",
+    "pino-pretty": "^11.0.0",
+    "node-pg-migrate": "^7.3.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "tsx": "^4.11.0",
+    "@types/node": "^20.12.12",
+    "@types/pg": "^8.11.6",
+    "@types/uuid": "^9.0.8",
+    "vitest": "^1.6.0"
+  }
+}

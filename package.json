@@ -1,0 +1,19 @@
+{
+  "name": "allsports",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "realtime"
+  ],
+  "scripts": {
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:realtime": "npm --workspace realtime run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:realtime\"",
+    "db:migrate": "npm --workspace backend run db:migrate",
+    "db:seed": "npm --workspace backend run db:seed"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

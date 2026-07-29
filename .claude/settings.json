@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(curl -s -m 5 http://localhost:18000/health)",
+      "Bash(npx expo *)",
+      "Bash(EXPO_OFFLINE=1 npx expo start --web --port 8081 --offline)",
+      "Bash(curl -s -m 120 -o /private/tmp/claude-504/-Users-advaitchoudhary-Documents-compete-allsports/3324ac52-cafb-4687-aaac-8deb084edb3f/scratchpad/index.html -w 'status=%{http_code} bytes=%{size_download}\\\\n' http://localhost:8081/)",
+      "Bash(curl -s -m 300 -o /dev/null -w 'bundle status=%{http_code} bytes=%{size_download} time=%{time_total}s\\\\n' \"http://localhost:8081/index.bundle?platform=web&dev=true&hot=false\")"
+    ]
+  }
+}

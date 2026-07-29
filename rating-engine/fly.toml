@@ -1,0 +1,42 @@
+# Fly.io config — AllSports rating engine (Python/FastAPI + Streams consumer)
+# Deploy:  flyctl deploy   (run from this directory)
+# Secrets: flyctl secrets set DATABASE_URL=… REDIS_URL=…
+#
+# Two process groups share one image (see docs/deployment-fly.md):
+#   api      — FastAPI /suggest, /preview, /health (the referee flow depends on this)
+#   consumer — the Redis Streams worker (XREADGROUP + XAUTOCLAIM)
+# A stuck consumer can't take down the API, and each scales independently.
+app = "allsports-rating"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # API process must NOT also run the consumer in-thread — the consumer process does.
+  RUN_CONSUMER_IN_API = "false"
+
+[processes]
+  api = "python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+  consumer = "python consumer.py"
+
+# Only the API process serves HTTP. flycast (allsports-rating.flycast:8000) lets the
+# backend reach it over Fly's private network — no public exposure needed.
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = false
+  min_machines_running = 1
+  processes = ["api"]
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

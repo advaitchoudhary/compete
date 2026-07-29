@@ -1,0 +1,109 @@
+services:
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:14-alpine
+    container_name: allsports_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: allsports
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: allsports_dev
+    ports:
+      - '5433:5432'   # 5432 taken by local postgres; use 5433 externally
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d   # auto-runs on first start
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U allsports -d allsports_dev']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: allsports_redis
+    restart: unless-stopped
+    ports:
+      - '6380:6379'   # 6379 taken by local redis; use 6380 externally
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Main Backend (Node.js/Fastify) ───────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: allsports_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - '13000:3000'   # host 13000 → container 3000 (3000 taken by an SSH tunnel)
+    environment:
+      DATABASE_URL: postgresql://allsports:password@postgres:5432/allsports_dev
+      REDIS_URL: redis://redis:6379
+      RATING_ENGINE_URL: http://rating-engine:8000
+      JWT_SECRET: dev-jwt-secret-minimum-32-chars-long
+      JWT_EXPIRES_IN: 7d
+      NODE_ENV: development
+      PORT: 3000
+      LOG_LEVEL: debug
+      # Firebase: fill in real values in .env.local
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-dev-project}
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL:-}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY:-}
+    volumes:
+      - ./backend/src:/app/src   # hot reload in dev
+    command: npm run dev
+
+  # ── Real-time Service (Socket.IO) ───────────────────────────────────────────
+  realtime:
+    build:
+      context: ./realtime
+      dockerfile: Dockerfile
+      target: development
+    container_name: allsports_realtime
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - '13001:3001'   # host 13001 → container 3001 (3001 taken by an SSH tunnel)
+    environment:
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-jwt-secret-minimum-32-chars-long
+      REALTIME_PORT: 3001
+      NODE_ENV: development
+    volumes:
+      - ./realtime/src:/app/src
+    command: npm run dev
+
+  # ── Rating Engine (Python/FastAPI) ───────────────────────────────────────────
+  rating-engine:
+    build:
+      context: ./rating-engine
+      dockerfile: Dockerfile
+    container_name: allsports_rating_engine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - '18000:8000'   # host 18000 → container 8000 (8000 taken by a stray node process)
+    environment:
+      DATABASE_URL: postgresql://allsports:password@postgres:5432/allsports_dev
+      REDIS_URL: redis://redis:6379
+
+volumes:
+  postgres_data:

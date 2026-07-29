@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "AllSports",
+    "slug": "allsports",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0f0f0f"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.allsports.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0f0f0f"
+      },
+      "package": "com.allsports.app"
+    },
+    "web": {
+      "bundler": "metro",
+      "backgroundColor": "#0f0f0f",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "scheme": "allsports",
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

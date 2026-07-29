@@ -1,0 +1,35 @@
+# Fly.io config — AllSports realtime (Socket.IO)
+# Deploy:  flyctl deploy   (run from this directory)
+# Secrets: flyctl secrets set JWT_SECRET=… REDIS_URL=…
+#
+# Safe to run multi-instance: cross-instance fan-out is handled by the Redis
+# pub/sub bridge (each instance relays to its own sockets), and transport is
+# websocket-only so no sticky sessions are needed. See docs/deployment-fly.md §1.
+app = "allsports-realtime"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+  build-target = "production"
+
+[env]
+  NODE_ENV = "production"
+  REALTIME_PORT = "3001"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = false
+  min_machines_running = 2
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,37 @@
+# Fly.io config — AllSports backend (Fastify API)
+# Deploy:  flyctl deploy   (run from this directory)
+# Secrets: flyctl secrets set JWT_SECRET=… DATABASE_URL=… REDIS_URL=… FIREBASE_PRIVATE_KEY=…
+app = "allsports-backend"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+  build-target = "production"
+
+[deploy]
+  # Apply pending migrations once, before the new release takes traffic.
+  # node-pg-migrate + migrations/ ship in the production image (see Dockerfile).
+  release_command = "npm run db:migrate"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  RATING_ENGINE_URL = "http://allsports-rating.flycast:8000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_start_machines = true
+  auto_stop_machines = false
+  min_machines_running = 2
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
