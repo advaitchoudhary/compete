@@ -79,6 +79,42 @@ event_referees (event_id, user_id, pitch_label, added_at)
 
 `pitch_label` lets the generator keep a referee on one pitch all day.
 
+#### 3.1.1 Event tier authority — the anti-fraud mechanism
+
+**This is the single most load-bearing rule in the design.** Tier drives rating weight (amateur 1.0 → legends 3.0 in the blended overall Elo), so whoever controls tier controls the ladder.
+
+Today that authority sits entirely with referees: `matches.routes.ts:41-53` refuses to create a match above the creating referee's own `referee_tier` via `canOfficiate`. A referee cannot inflate beyond their verified standing.
+
+**Phase 3 would break this.** The fixture generator creates matches on the *organizer's* command, and organizers have no tier. Left unaddressed, an organizer could declare a `legends` tournament and inflate 80 players' ratings at 3.0× weight. Nothing is inflated today only because events have no tier at all.
+
+**Rule (decided 2026-07-29): an event's tier may not exceed the LOWEST `referee_tier` among its assigned referees.**
+
+Every match in a pro tournament must be officiated at pro level, so the weakest assigned referee constrains the whole tournament. This deliberately reuses the referee authority chain rather than inventing a new one, and it produces the right real-world gate: **to run a pro tournament you must recruit pro referees.**
+
+```
+events.tier  TEXT NOT NULL DEFAULT 'amateur'
+  CHECK (tier IN ('amateur','semi_pro','pro','legends'))
+```
+
+Defaulting to `amateur` means an unspecified tournament is always the lowest-weight one, never the highest — matching how `matches.tier` already behaves.
+
+**Three enforcement points, defence in depth:**
+
+1. **Setting the tier** (`PATCH /events/:id/tier`) — validated against the referees currently assigned.
+2. **Assigning referees** (`POST /events/:id/referees`) — rejected if the new roster would drop the floor below the event's current tier. Otherwise an organizer could set `pro` with pro referees, then swap them for amateurs.
+3. **Fixture generation** — every generated match is re-checked against its own assigned referee using the existing `canOfficiate`. This is the real guarantee: even if 1 and 2 were bypassed, no match can be created above its referee's standing.
+
+**Tier is not settable at creation.** An event has no referees yet at that moment, so `POST /events` always starts at `amateur`; raising it requires assigning qualifying referees first. This avoids a guaranteed-fail code path and teaches the model through use.
+
+**Tier freezes at fixture generation.** Once fixtures exist the tier is immutable, so an organizer cannot run an amateur tournament and re-declare it `legends` afterwards to retroactively reweight ratings already computed from it.
+
+**Edge cases:**
+- An event with **zero** assigned referees supports `amateur` only.
+- Assigned **admins** are treated as unrestricted and excluded from the floor calculation (they already bypass tier gating everywhere else).
+- A referee with a NULL `referee_tier` cannot officiate at all (`canOfficiate` returns false for null), so their presence holds the event at `amateur`.
+
+**Rejected alternative:** giving organizers their own `organizer_tier` ladder. It adds a second admin approval queue, and on its own it would still permit an amateur referee to officiate a pro match — so it is strictly weaker than this rule, not an alternative to it. It can be layered on later if organizers need tier standing independent of the referees they can book.
+
 ### 3.2 Team self-registration with guests
 
 Captains register their own teams via the event link. Guest players are the **primary** path here, not an edge case — expect 60%+ of a roster to be unregistered.
@@ -138,7 +174,9 @@ event_fixtures (
 
 **Lifecycle.** The generator creates all 16 fixtures in one transaction. Group fixtures already know both teams, so they immediately create their `matches` rows and set `match_id`. Knockout fixtures sit with `match_id` NULL. When a match completes, `finalizeMatch()` calls a **resolver** that finds fixtures whose sources are now satisfied, fills their team ids, creates the real `matches` row, and links it.
 
-Whenever the resolver (or the generator) creates a `matches` row it copies across: `event_id`, `round`, `referee_id`, `scheduled_at`, `venue`, plus `tier` from the event and `format` / `duration_minutes` from the event's `rules`. The last two are what §3.5 needs to weight the rating correctly, so they must be stamped at creation, not backfilled.
+Whenever the resolver (or the generator) creates a `matches` row it copies across: `event_id`, `round`, `referee_id`, `scheduled_at`, `venue`, plus `tier` from `events.tier` and `format` / `duration_minutes` from `events.match_format` and `events.match_duration_minutes`. The last two are what §3.5 needs to weight the rating correctly, so they must be stamped at creation, not backfilled.
+
+**Every created match must pass `canOfficiate(assignedReferee.referee_tier, match.tier)` — the third and final enforcement point of §3.1.1.** If any generated match would exceed its assigned referee's standing, the whole generation transaction is refused with an error naming the referee and the tier. This is what makes tier inflation impossible even if the earlier checks were bypassed, so it is a hard requirement of the generator, not a nicety.
 
 **Why a separate table rather than nullable columns.** A *fixture* is a slot in a competition structure; a *match* is a game between two known teams. They have genuinely different lifecycles — group fixtures resolve instantly, knockout fixtures resolve across six hours — and conflating them is what forces the nullable columns.
 
@@ -269,16 +307,19 @@ Guests are excluded from all push (no app, no token) — they receive the WhatsA
 
 ## 4. Migrations
 
-| # | File | Contents |
-|---|---|---|
-| 009 | `009_organizer_role.sql` | `users.role` += `organizer`; `referee_applications.request_type` += `organizer` |
-| 010 | `010_event_referees.sql` | `event_referees` table |
-| 011 | `011_event_standings.sql` | `event_teams` += `played, won, drawn, lost, goals_for, goals_against` |
-| 012 | `012_event_fixtures.sql` | `event_fixtures` table (bracket structure + source resolution + `match_id` link) |
-| 013 | `013_match_format.sql` | `matches` += `format`, `duration_minutes` |
-| 014 | `014_push_notifications.sql` | `push_tokens`, `notifications` tables |
+| # | Phase | File | Contents |
+|---|---|---|---|
+| 009 | 1 ✅ | `009_organizer_role.sql` | `users.role` += `organizer`; `referee_applications.request_type` += `organizer` |
+| 010 | 1 ✅ | `010_event_referees.sql` | `event_referees` table |
+| 011 | 2 | `011_event_tier_and_format.sql` | `events` += `tier` (NOT NULL DEFAULT `'amateur'`, see §3.1.1), `match_format` |
+| 012 | 3 | `012_event_standings.sql` | `event_teams` += `played, won, drawn, lost, goals_for, goals_against` |
+| 013 | 3 | `013_event_fixtures.sql` | `event_fixtures` table (bracket structure + source resolution + `match_id` link) |
+| 014 | 4 | `014_match_duration.sql` | `matches` += `format`, `duration_minutes` |
+| 015 | 7 | `015_push_notifications.sql` | `push_tokens`, `notifications` tables |
 
-**No migration alters `matches` team columns.** The only change to `matches` is migration 013, which adds two nullable columns — additive and safe. This is a deliberate revision: an earlier draft made `home_team_id`/`away_team_id` nullable and was rejected once the blast radius was measured (see §3.3).
+**No migration alters `matches` team columns.** The only change to `matches` is migration 014, which adds two nullable columns — additive and safe. This is a deliberate revision: an earlier draft made `home_team_id`/`away_team_id` nullable and was rejected once the blast radius was measured (see §3.3).
+
+**Numbering note:** an earlier draft assigned `011` to standings. `011` is now the Phase 2 events migration, and everything after it shifted by one. `match_format` and `duration_minutes` become real columns rather than living inside the `events.rules` JSON blob as originally sketched — validated, typed and queryable.
 
 ---
 
@@ -295,8 +336,9 @@ Guests are excluded from all push (no app, no token) — they receive the WhatsA
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `POST /v1/organizer/apply` | player | Apply to become an organizer (reuses `referee_applications`) |
-| `POST /v1/events/:id/referees` | organizer | Assign approved referees + pitch labels |
+| `POST /v1/events/:id/referees` | organizer | Assign approved referees + pitch labels. **Rejected if the new roster no longer supports the event's tier** (§3.1.1) |
 | `GET /v1/events/:id/referees` | organizer | List them |
+| `PATCH /v1/events/:id/tier` | organizer | Set the event's tier. Capped by the lowest assigned `referee_tier`; frozen once fixtures exist (§3.1.1) |
 | `POST /v1/events/:id/register` | captain | Register a team with a roster incl. guests |
 | `POST /v1/events/:id/fixtures` | organizer | Generate the full day's fixtures |
 | `GET /v1/events/:id/fixtures` | any auth | Bracket + standings |
@@ -330,6 +372,7 @@ The existing admin approve/reject endpoints extend to flip `role` to `organizer`
 - **Standings** — table maths and the full tie-break chain, including a two-way head-to-head tie and a three-way tie falling back to seed order.
 - **Isolation guarantee** — with unresolved fixtures present in an event, `GET /matches`, `GET /matches/:id` and the rating consumer behave exactly as before. This is the test that proves the `event_fixtures` choice paid off.
 - **Rating weight** — a null `duration_minutes` reproduces today's Elo deltas exactly (backwards-compatibility guard); a 12-minute match produces a delta at the floor weight.
+- **Tier authority (§3.1.1)** — the highest-value tests in this design. An event with no referees accepts only `amateur`; raising the tier above the lowest assigned `referee_tier` is refused; swapping in a lower-tier referee after setting a high tier is refused; the generator refuses to create any match exceeding its assigned referee's standing; and the tier cannot be changed once fixtures exist.
 - **Override ordering** — the per-match review must happen before completion: a referee value within ±4 is accepted while the match is live, the same call returns 409 once the match is `completed`, an out-of-range value is rejected, and the Elo consumer uses the referee's saved star rather than the algorithm's suggestion.
 - **Guest claim** — claiming carries all rating history over; a second claim with the same token fails.
 - **End-to-end** — seed an 8-team event, register teams with guests, generate, score all 16 matches, assert standings, bracket, ratings and the public payload.

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let a captain register their whole squad into a tournament in one call — typing in players who have no account, because at a turf tournament most of them don't.
+**Goal:** Give tournaments a tier that cannot be inflated, then let a captain register their whole squad into one in a single call — typing in players who have no account, because at a turf tournament most of them don't.
 
-**Architecture:** One new composite endpoint, `POST /v1/events/:id/register`, that creates the team, its `team_members`, any guest `users` rows, and the `event_teams` registration inside a single transaction. Guest players are the primary path, not an edge case. Adds `events.match_format` so squad-size minimums can be enforced against the actual a-side format, and a roster-returning `GET /v1/events/:id/teams` so the organizer can verify squads before generating fixtures in Phase 3.
+**Architecture:** Two halves. First, **tier authority**: `events.tier` plus the rule that it may never exceed the lowest `referee_tier` among the event's assigned referees, enforced when setting the tier, when the roster changes, and (in Phase 3) per-match at fixture generation. This is the anti-fraud mechanism the whole rating ladder rests on — see spec §3.1.1. Second, **registration**: one composite endpoint, `POST /v1/events/:id/register`, creating the team, its `team_members`, any guest `users` rows and the `event_teams` row in a single transaction, with guests as the primary path. Plus `events.match_format` so squad minimums are checked against the real a-side format, and a roster-returning `GET /v1/events/:id/teams` so an organizer can verify squads before Phase 3 generates fixtures.
 
 **Tech Stack:** Fastify 4, Kysely 0.27 (Postgres), Zod, Vitest, raw-SQL migrations run by node-pg-migrate.
 
@@ -30,36 +30,51 @@
 
 ---
 
-### Task 1: `events.match_format` for squad-size rules
+### Task 1: `events.tier` and `events.match_format`
 
 **Files:**
-- Create: `backend/migrations/011_event_match_format.sql`
+- Create: `backend/migrations/011_event_tier_and_format.sql`
 - Modify: `backend/src/shared/db/types.ts`
 - Modify: `backend/src/modules/events/events.routes.ts` (accept `match_format` on create)
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `events.match_format` column, nullable, one of `'5-a-side' | '7-a-side' | '11-a-side'`; `EventTable.match_format: MatchFormat | null`; exported `export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'`; `POST /v1/events` accepts an optional `match_format`.
+- Produces: `events.tier` (NOT NULL DEFAULT `'amateur'`, one of the four `MatchTier` values) and `events.match_format` (nullable, one of `'5-a-side' | '7-a-side' | '11-a-side'`); `EventTable.tier: Generated<MatchTier>` and `EventTable.match_format: MatchFormat | null`; exported `export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'`; `POST /v1/events` accepts an optional `match_format`.
 
-**Why this column is needed:** `events.format` is the *tournament structure* (`knockout`, `group_knockout`, …), not how many players per side. Nothing currently records that a tournament is 5-a-side, so a squad minimum cannot be enforced. The spec (§3.3) assumed this lived inside the `events.rules` JSON blob; a real column is validated, queryable and typed, so it goes here instead.
+**Why `events.tier` matters most:** tier drives rating weight (amateur 1.0 → legends 3.0 in the blended overall Elo), so whoever controls tier controls the ladder. Today that authority sits with referees — `matches.routes.ts:41-53` refuses any match above the creating referee's own tier. Phase 3's generator creates matches on the *organizer's* command, and organizers have no tier, so without this column and the rules in Task 2 an organizer could declare a `legends` tournament and inflate 80 players at 3.0× weight. See spec §3.1.1.
+
+**Why `events.match_format` is needed:** `events.format` is the *tournament structure* (`knockout`, `group_knockout`, …), not how many players per side. Nothing currently records that a tournament is 5-a-side, so a squad minimum cannot be enforced. The spec originally assumed this lived inside the `events.rules` JSON blob; a real column is validated, queryable and typed.
+
+**Note:** `tier` is deliberately **not** accepted by `POST /events`. A brand-new event has no referees, so nothing above `amateur` could ever be authorised at creation time — accepting it there would be a guaranteed-fail path. It is set afterwards via `PATCH /events/:id/tier` (Task 2).
 
 - [ ] **Step 1: Write migration 011**
 
-Create `backend/migrations/011_event_match_format.sql`:
+Create `backend/migrations/011_event_tier_and_format.sql`:
 
 ```sql
--- AllSports — Event Match Format
--- Migration: 011_event_match_format
+-- AllSports — Event Tier & Match Format
+-- Migration: 011_event_tier_and_format
 -- Run order: 11
 --
--- events.format is the TOURNAMENT structure (knockout / group_knockout / …).
--- This column records how many players per side, which is a different thing and
--- was previously unrecorded. Needed to enforce a minimum squad size at
--- registration, and later to stamp matches.format for rating match-weight.
+-- events.tier is the competition grade of the whole tournament, and every match
+-- generated for it inherits this tier. Tier drives rating weight (amateur 1.0 →
+-- legends 3.0), so this column is the lever the anti-fraud rules protect:
+-- an event's tier may not exceed the LOWEST referee_tier among its assigned
+-- referees. See spec §3.1.1. Defaults to 'amateur' so an unspecified tournament
+-- is always the lowest-weight one, never the highest.
 --
+-- events.match_format records players per side, which events.format does NOT —
+-- that column holds the tournament structure (knockout / group_knockout / …).
+-- Needed to enforce a minimum squad size at registration, and later to stamp
+-- matches.format for rating match-weight.
+
+ALTER TABLE events ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'amateur'
+  CHECK (tier IN ('amateur', 'semi_pro', 'pro', 'legends'));
+
+CREATE INDEX IF NOT EXISTS idx_events_tier ON events(tier, status);
+
 -- Nullable because existing events predate it; registration falls back to the
 -- most permissive minimum when it is NULL.
-
 ALTER TABLE events ADD COLUMN IF NOT EXISTS match_format TEXT
   CHECK (match_format IN ('5-a-side', '7-a-side', '11-a-side'));
 ```
@@ -69,14 +84,16 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS match_format TEXT
 ```bash
 cd /Users/advaitchoudhary/Documents/compete/allsports
 DATABASE_URL="postgresql://allsports:password@localhost:5433/allsports_test" npm --workspace backend run db:migrate
-docker exec -i allsports_postgres psql -U allsports -d allsports_dev -q < backend/migrations/011_event_match_format.sql
+docker exec -i allsports_postgres psql -U allsports -d allsports_dev -q < backend/migrations/011_event_tier_and_format.sql
 docker exec allsports_postgres psql -U allsports -d allsports_test -tAc \
-  "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='events_match_format_check';"
+  "SELECT conname||' => '||pg_get_constraintdef(oid) FROM pg_constraint WHERE conname IN ('events_tier_check','events_match_format_check');"
+docker exec allsports_postgres psql -U allsports -d allsports_test -tAc \
+  "SELECT column_name||' default='||COALESCE(column_default,'NONE') FROM information_schema.columns WHERE table_name='events' AND column_name IN ('tier','match_format');"
 ```
 
-Expected: migrate log shows `### MIGRATION 011_event_match_format (UP) ###` then `Migrations complete!`, and the constraint prints listing all three formats.
+Expected: migrate log shows `### MIGRATION 011_event_tier_and_format (UP) ###` then `Migrations complete!`; both constraints print; and `tier` shows `default='amateur'::text` while `match_format` shows `default=NONE`.
 
-- [ ] **Step 3: Add the Kysely type**
+- [ ] **Step 3: Add the Kysely types**
 
 In `backend/src/shared/db/types.ts`, add next to the other exported unions (after `EventStatus`):
 
@@ -87,9 +104,14 @@ export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'
 And in `EventTable`, add after the `format` line:
 
 ```ts
+  // Competition grade of the whole tournament; every generated match inherits it.
+  // Capped by the lowest referee_tier among assigned referees — see spec §3.1.1.
+  tier: Generated<MatchTier>
   // Players per side — distinct from `format`, which is the tournament structure.
   match_format: MatchFormat | null
 ```
+
+`MatchTier` is already imported at the top of this file (`import type { MatchTier } from '../tiers'`), so no new import is needed.
 
 - [ ] **Step 4: Accept it when creating an event**
 
@@ -120,13 +142,546 @@ Expected: 0 type errors; 25 tests still pass (3 files).
 
 ```bash
 cd /Users/advaitchoudhary/Documents/compete/allsports
-git add backend/migrations/011_event_match_format.sql backend/src/shared/db/types.ts backend/src/modules/events/events.routes.ts
-git commit -m "feat(events): record players-per-side as events.match_format"
+git add backend/migrations/011_event_tier_and_format.sql backend/src/shared/db/types.ts backend/src/modules/events/events.routes.ts
+git commit -m "feat(events): add events.tier and events.match_format"
 ```
 
 ---
 
-### Task 2: `POST /events/:id/register` — squad registration with guests
+### Task 2: Tier authority — the anti-fraud enforcement
+
+**Files:**
+- Create: `backend/src/modules/events/event-tier.ts`
+- Create: `backend/src/modules/events/event-tier.routes.ts`
+- Modify: `backend/src/modules/events/event-referees.routes.ts` (re-check tier when the roster changes)
+- Modify: `backend/src/app.ts`
+- Create: `backend/src/tests/event-tier.test.ts`
+
+**Interfaces:**
+- Consumes: `events.tier` from Task 1; `event_referees` from Phase 1; `MATCH_TIERS`, `TIER_RANK`, `canOfficiate` from `shared/tiers`.
+- Produces:
+  - `export async function maxTierForEvent(eventId: string): Promise<MatchTier>` — the highest tier an event's current referee roster can support.
+  - `export async function assertTierSupported(eventId: string, tier: MatchTier): Promise<{ ok: true } | { ok: false; reason: string }>`
+  - `export async function eventTierRoutes(app: FastifyInstance)` registering `PATCH /events/:id/tier`.
+
+**The rule (spec §3.1.1):** an event's tier may not exceed the **lowest** `referee_tier` among its assigned referees. Every match in a pro tournament must be officiated at pro level, so the weakest assigned referee constrains the whole tournament. Assigned admins are unrestricted and excluded from the floor. An event with **zero** assigned referees supports `amateur` only. Tier freezes once any match exists for the event.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `backend/src/tests/event-tier.test.ts`:
+
+```ts
+/**
+ * Integration tests — event tier authority (spec §3.1.1).
+ *
+ * These are the highest-value tests in the codebase: tier drives rating weight
+ * (amateur 1.0 → legends 3.0), so a hole here lets an organizer inflate the
+ * whole ladder. The rule: an event's tier may not exceed the LOWEST referee_tier
+ * among its assigned referees.
+ */
+
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+vi.mock('../shared/queue/ratings.stream', () => ({
+  enqueueRatingJob: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../modules/auth/auth.service', () => ({
+  initFirebase: vi.fn(),
+  verifyFirebaseToken: vi.fn().mockResolvedValue({
+    uid: 'test-tier-uid',
+    phone_number: '+919999999004',
+    email: undefined,
+  }),
+  issueJwt: vi.fn().mockReturnValue('test-jwt-token'),
+}))
+
+import Fastify from 'fastify'
+import jwt from '@fastify/jwt'
+import { eventTierRoutes } from '../modules/events/event-tier.routes'
+import { eventRefereesRoutes } from '../modules/events/event-referees.routes'
+import { getDb } from '../shared/db/client'
+
+const TEST_JWT_SECRET = 'test-jwt-secret-minimum-32-chars-long'
+
+const ORGANIZER_ID = '550e8400-e29b-41d4-a716-4466554404d1'
+const REF_AMATEUR_ID = '550e8400-e29b-41d4-a716-4466554404d2'
+const REF_PRO_ID = '550e8400-e29b-41d4-a716-4466554404d3'
+const REF_LEGENDS_ID = '550e8400-e29b-41d4-a716-4466554404d4'
+
+const ALL_TEST_USERS = [ORGANIZER_ID, REF_AMATEUR_ID, REF_PRO_ID, REF_LEGENDS_ID]
+
+let eventId: string
+
+async function buildTestApp() {
+  const app = Fastify({ logger: false })
+  await app.register(jwt, { secret: TEST_JWT_SECRET })
+  await app.register(eventTierRoutes, { prefix: '/v1' })
+  await app.register(eventRefereesRoutes, { prefix: '/v1' })
+  return app
+}
+
+function makeAuthHeader(userId: string, app: any): string {
+  return `Bearer ${app.jwt.sign({ sub: userId }, { expiresIn: '1h' })}`
+}
+
+async function seedUser(id: string, name: string, role: string, refereeTier?: string) {
+  await getDb()
+    .insertInto('users')
+    .values({ id, name, role: role as any, referee_tier: (refereeTier ?? null) as any })
+    .onConflict((oc) =>
+      oc.column('id').doUpdateSet({
+        role: role as any,
+        referee_tier: (refereeTier ?? null) as any,
+      })
+    )
+    .execute()
+}
+
+async function cleanupTestData() {
+  const db = getDb()
+  const events = await db
+    .selectFrom('events')
+    .select('id')
+    .where('organizer_id', 'in', ALL_TEST_USERS)
+    .execute()
+  const eventIds = events.map((e) => e.id)
+  if (eventIds.length > 0) {
+    await db.deleteFrom('matches').where('event_id', 'in', eventIds).execute()
+    await db.deleteFrom('event_referees').where('event_id', 'in', eventIds).execute()
+    await db.deleteFrom('event_teams').where('event_id', 'in', eventIds).execute()
+    await db.deleteFrom('events').where('id', 'in', eventIds).execute()
+  }
+  await db.deleteFrom('event_referees').where('user_id', 'in', ALL_TEST_USERS).execute()
+  await db.deleteFrom('organizer_scores').where('user_id', 'in', ALL_TEST_USERS).execute()
+  await db.deleteFrom('users').where('id', 'in', ALL_TEST_USERS).execute()
+}
+
+async function setReferees(
+  app: any,
+  refs: Array<{ user_id: string; pitch_label?: string }>
+) {
+  return app.inject({
+    method: 'POST',
+    url: `/v1/events/${eventId}/referees`,
+    headers: { authorization: makeAuthHeader(ORGANIZER_ID, app) },
+    payload: { referees: refs },
+  })
+}
+
+async function setTier(app: any, tier: string) {
+  return app.inject({
+    method: 'PATCH',
+    url: `/v1/events/${eventId}/tier`,
+    headers: { authorization: makeAuthHeader(ORGANIZER_ID, app) },
+    payload: { tier },
+  })
+}
+
+describe('Event tier authority', () => {
+  let app: Awaited<ReturnType<typeof buildTestApp>>
+
+  beforeAll(async () => {
+    app = await buildTestApp()
+    await app.ready()
+    await cleanupTestData()
+
+    await seedUser(ORGANIZER_ID, 'Turf Owner', 'organizer')
+    await seedUser(REF_AMATEUR_ID, 'Amateur Ref', 'referee', 'amateur')
+    await seedUser(REF_PRO_ID, 'Pro Ref', 'referee', 'pro')
+    await seedUser(REF_LEGENDS_ID, 'Legends Ref', 'referee', 'legends')
+
+    const db = getDb()
+    const sport = await db
+      .selectFrom('sports')
+      .select('id')
+      .where('slug', '=', 'football')
+      .executeTakeFirstOrThrow()
+
+    const event = await db
+      .insertInto('events')
+      .values({
+        name: 'Tier Authority Cup',
+        sport_id: sport.id,
+        organizer_id: ORGANIZER_ID,
+        format: 'knockout',
+        city: 'Mumbai',
+        status: 'registration',
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    eventId = event.id
+  })
+
+  afterAll(async () => {
+    await cleanupTestData()
+    await app.close()
+  })
+
+  it('a new event defaults to amateur', async () => {
+    const row = await getDb()
+      .selectFrom('events')
+      .select('tier')
+      .where('id', '=', eventId)
+      .executeTakeFirstOrThrow()
+    expect(row.tier).toBe('amateur')
+  })
+
+  it('with no referees assigned, only amateur is allowed', async () => {
+    const res = await setTier(app, 'pro')
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toContain('amateur')
+
+    const ok = await setTier(app, 'amateur')
+    expect(ok.statusCode).toBe(200)
+  })
+
+  it('rejects an invalid tier value', async () => {
+    const res = await setTier(app, 'superstar')
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('cannot exceed the lowest assigned referee tier', async () => {
+    // A pro and an amateur referee: the amateur is the floor, so pro is refused.
+    const assign = await setReferees(app, [
+      { user_id: REF_PRO_ID, pitch_label: 'Pitch 1' },
+      { user_id: REF_AMATEUR_ID, pitch_label: 'Pitch 2' },
+    ])
+    expect(assign.statusCode).toBe(200)
+
+    const res = await setTier(app, 'pro')
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toContain('amateur')
+  })
+
+  it('allows the tier once every assigned referee qualifies', async () => {
+    const assign = await setReferees(app, [
+      { user_id: REF_PRO_ID, pitch_label: 'Pitch 1' },
+      { user_id: REF_LEGENDS_ID, pitch_label: 'Pitch 2' },
+    ])
+    expect(assign.statusCode).toBe(200)
+
+    // Floor is now 'pro' (legends outranks it), so pro is allowed.
+    const res = await setTier(app, 'pro')
+    expect(res.statusCode).toBe(200)
+    expect(res.json().tier).toBe('pro')
+  })
+
+  it('still refuses a tier above the floor', async () => {
+    // Floor is 'pro', so legends must be refused.
+    const res = await setTier(app, 'legends')
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toContain('pro')
+  })
+
+  it('refuses a referee swap that would undercut the current tier', async () => {
+    // Event is 'pro'. Swapping in the amateur referee would drop the floor
+    // below it — the exact loophole this check exists to close.
+    const res = await setReferees(app, [{ user_id: REF_AMATEUR_ID, pitch_label: 'Pitch 1' }])
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toContain('pro')
+
+    // The roster must be unchanged.
+    const rows = await getDb()
+      .selectFrom('event_referees')
+      .select('user_id')
+      .where('event_id', '=', eventId)
+      .execute()
+    expect(rows).toHaveLength(2)
+  })
+
+  it('lowering the tier first then swapping referees is allowed', async () => {
+    const down = await setTier(app, 'amateur')
+    expect(down.statusCode).toBe(200)
+
+    const res = await setReferees(app, [{ user_id: REF_AMATEUR_ID, pitch_label: 'Pitch 1' }])
+    expect(res.statusCode).toBe(200)
+  })
+
+  it('freezes the tier once a match exists for the event', async () => {
+    const db = getDb()
+    const sport = await db
+      .selectFrom('sports')
+      .select('id')
+      .where('slug', '=', 'football')
+      .executeTakeFirstOrThrow()
+    const teams = await db.selectFrom('teams').select('id').limit(2).execute()
+    // Requires at least two teams to exist in the test DB (the seed provides them).
+    expect(teams.length).toBeGreaterThanOrEqual(2)
+
+    await db
+      .insertInto('matches')
+      .values({
+        event_id: eventId,
+        sport_id: sport.id,
+        home_team_id: teams[0].id,
+        away_team_id: teams[1].id,
+        status: 'scheduled',
+        tier: 'amateur',
+        referee_id: REF_AMATEUR_ID,
+      })
+      .execute()
+
+    const res = await setTier(app, 'semi_pro')
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toContain('fixtures')
+  })
+
+  it('only the event owner may change the tier', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: `/v1/events/${eventId}/tier`,
+      headers: { authorization: makeAuthHeader(REF_PRO_ID, app) },
+      payload: { tier: 'amateur' },
+    })
+    // A referee isn't an organizer at all, so this is a role rejection.
+    expect(res.statusCode).toBe(403)
+  })
+})
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+cd /Users/advaitchoudhary/Documents/compete/allsports
+DATABASE_URL="postgresql://allsports:password@localhost:5433/allsports_test" \
+  REDIS_URL="redis://localhost:6380" \
+  npm --workspace backend run test -- event-tier
+```
+
+Expected: FAIL — `Failed to load url ../modules/events/event-tier.routes`.
+
+- [ ] **Step 3: Write the tier helper**
+
+Create `backend/src/modules/events/event-tier.ts`:
+
+```ts
+import { getDb } from '../../shared/db/client'
+import { TIER_RANK, type MatchTier } from '../../shared/tiers'
+
+/**
+ * The highest tier an event's current referee roster can support.
+ *
+ * Every match in a pro tournament must be officiated at pro level, so the
+ * WEAKEST assigned referee constrains the whole event. Assigned admins are
+ * unrestricted and excluded from the floor. An event with no assigned referees
+ * supports 'amateur' only. See spec §3.1.1.
+ */
+export async function maxTierForEvent(eventId: string): Promise<MatchTier> {
+  const assigned = await getDb()
+    .selectFrom('event_referees as er')
+    .innerJoin('users as u', 'u.id', 'er.user_id')
+    .select(['u.role', 'u.referee_tier'])
+    .where('er.event_id', '=', eventId)
+    .execute()
+
+  // Admins bypass tier gating everywhere else, so they don't constrain the floor.
+  const constraining = assigned.filter((a) => a.role !== 'admin')
+
+  if (constraining.length === 0) {
+    // Either nobody is assigned, or only admins are. Neither justifies a raised
+    // tier on its own — a tournament needs verified officials to be graded.
+    return 'amateur'
+  }
+
+  let floor: MatchTier = 'legends'
+  for (const ref of constraining) {
+    // A null referee_tier cannot officiate at all, so it pins the event to amateur.
+    const tier = ref.referee_tier ?? 'amateur'
+    if (TIER_RANK[tier] < TIER_RANK[floor]) floor = tier
+  }
+  return floor
+}
+
+/**
+ * Whether an event may hold the given tier, and why not if it may not.
+ * Used by PATCH /events/:id/tier and by referee assignment.
+ */
+export async function assertTierSupported(
+  eventId: string,
+  tier: MatchTier
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const max = await maxTierForEvent(eventId)
+  if (TIER_RANK[tier] <= TIER_RANK[max]) return { ok: true }
+  return {
+    ok: false,
+    reason: `This event's referees only support '${max}' — a '${tier}' tournament needs every assigned referee at '${tier}' or above`,
+  }
+}
+
+/** True once any match exists for the event, after which the tier is frozen. */
+export async function eventHasFixtures(eventId: string): Promise<boolean> {
+  const match = await getDb()
+    .selectFrom('matches')
+    .select('id')
+    .where('event_id', '=', eventId)
+    .executeTakeFirst()
+  return Boolean(match)
+}
+```
+
+- [ ] **Step 4: Write the tier endpoint**
+
+Create `backend/src/modules/events/event-tier.routes.ts`:
+
+```ts
+import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import { requireRole } from '../../shared/middleware/auth'
+import { getDb } from '../../shared/db/client'
+import { MATCH_TIERS } from '../../shared/tiers'
+import { assertTierSupported, eventHasFixtures, maxTierForEvent } from './event-tier'
+
+const SetTierBody = z.object({ tier: z.enum(MATCH_TIERS) })
+
+export async function eventTierRoutes(app: FastifyInstance) {
+  /**
+   * PATCH /events/:id/tier
+   *
+   * Sets the competition grade of a tournament. Capped by the lowest
+   * referee_tier among assigned referees, and frozen once fixtures exist so a
+   * finished amateur event cannot be re-declared 'legends' to retroactively
+   * reweight ratings. See spec §3.1.1.
+   */
+  app.patch(
+    '/events/:id/tier',
+    { preHandler: requireRole('organizer', 'admin') },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const body = SetTierBody.safeParse(request.body)
+      if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+
+      const db = getDb()
+      const event = await db
+        .selectFrom('events')
+        .select(['id', 'organizer_id', 'tier'])
+        .where('id', '=', id)
+        .executeTakeFirst()
+
+      if (!event) return reply.code(404).send({ error: 'Event not found' })
+      if (event.organizer_id !== request.userId && request.userRole !== 'admin') {
+        return reply.code(403).send({ error: 'Forbidden — not your event' })
+      }
+
+      if (await eventHasFixtures(id)) {
+        return reply.code(409).send({
+          error: 'Tier is locked once fixtures have been generated',
+        })
+      }
+
+      const supported = await assertTierSupported(id, body.data.tier)
+      if (!supported.ok) return reply.code(409).send({ error: supported.reason })
+
+      const updated = await db
+        .updateTable('events')
+        .set({ tier: body.data.tier })
+        .where('id', '=', id)
+        .returning(['id', 'tier'])
+        .executeTakeFirstOrThrow()
+
+      return { event_id: updated.id, tier: updated.tier, max_supported: await maxTierForEvent(id) }
+    }
+  )
+}
+```
+
+- [ ] **Step 5: Close the referee-swap loophole**
+
+In `backend/src/modules/events/event-referees.routes.ts`, add the import:
+
+```ts
+import { maxTierForEvent } from './event-tier'
+import { TIER_RANK } from '../../shared/tiers'
+```
+
+Change the event lookup in the POST handler to also select the tier:
+
+```ts
+      const event = await db
+        .selectFrom('events')
+        .select(['id', 'organizer_id', 'tier'])
+        .where('id', '=', id)
+        .executeTakeFirst()
+```
+
+Then, immediately **before** the `db.transaction()` call, insert:
+
+```ts
+      // Closing the loophole: an organizer could set 'pro' with pro referees and
+      // then swap them for amateurs. Simulate the resulting roster and refuse if
+      // it would no longer support the event's current tier. See spec §3.1.1.
+      const wouldBeFloor = await (async () => {
+        const nominees = await db
+          .selectFrom('users')
+          .select(['role', 'referee_tier'])
+          .where('id', 'in', ids)
+          .execute()
+        const constraining = nominees.filter((n) => n.role !== 'admin')
+        if (constraining.length === 0) return 'amateur' as const
+        let floor: 'amateur' | 'semi_pro' | 'pro' | 'legends' = 'legends'
+        for (const n of constraining) {
+          const t = n.referee_tier ?? 'amateur'
+          if (TIER_RANK[t] < TIER_RANK[floor]) floor = t
+        }
+        return floor
+      })()
+
+      if (TIER_RANK[wouldBeFloor] < TIER_RANK[event.tier]) {
+        return reply.code(409).send({
+          error: `This roster only supports '${wouldBeFloor}' but the event is '${event.tier}' — lower the event tier first, or assign referees at '${event.tier}' or above`,
+        })
+      }
+```
+
+- [ ] **Step 6: Register the routes**
+
+In `backend/src/app.ts`, add the import after `eventRefereesRoutes`:
+
+```ts
+import { eventTierRoutes } from './modules/events/event-tier.routes'
+```
+
+And register it after `eventRefereesRoutes`:
+
+```ts
+  await app.register(eventTierRoutes, { prefix: V1_PREFIX })
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+```bash
+cd /Users/advaitchoudhary/Documents/compete/allsports
+DATABASE_URL="postgresql://allsports:password@localhost:5433/allsports_test" \
+  REDIS_URL="redis://localhost:6380" \
+  npm --workspace backend run test -- event-tier
+```
+
+Expected: PASS — 10 tests in `event-tier.test.ts`.
+
+- [ ] **Step 8: Verify types and the full suite twice**
+
+```bash
+cd /Users/advaitchoudhary/Documents/compete/allsports/backend && npx tsc --noEmit
+cd /Users/advaitchoudhary/Documents/compete/allsports
+for i in 1 2; do
+  DATABASE_URL="postgresql://allsports:password@localhost:5433/allsports_test" \
+    REDIS_URL="redis://localhost:6380" npm --workspace backend run test 2>&1 | grep -E "Test Files|Tests "
+done
+```
+
+Expected: 0 type errors; 4 files, 35 tests passing both times (25 from Phase 1 + 10 here).
+
+- [ ] **Step 9: Commit**
+
+```bash
+cd /Users/advaitchoudhary/Documents/compete/allsports
+git add backend/src/modules/events/event-tier.ts backend/src/modules/events/event-tier.routes.ts backend/src/modules/events/event-referees.routes.ts backend/src/app.ts backend/src/tests/event-tier.test.ts
+git commit -m "feat(events): cap event tier by the weakest assigned referee"
+```
+
+---
+
+### Task 3: `POST /events/:id/register` — squad registration with guests
 
 **Files:**
 - Create: `backend/src/modules/events/event-registration.routes.ts`
@@ -795,7 +1350,7 @@ for i in 1 2; do
 done
 ```
 
-Expected: 0 type errors; 4 files, 36 tests passing — **both times**. Running twice proves the cleanup handles guest users and teams correctly.
+Expected: 0 type errors; 5 files, 46 tests passing — **both times**. Running twice proves the cleanup handles guest users and teams correctly.
 
 - [ ] **Step 7: Commit**
 
@@ -807,14 +1362,14 @@ git commit -m "feat(events): captain registers a full squad with guest players"
 
 ---
 
-### Task 3: `GET /events/:id/teams` — registered squads with rosters
+### Task 4: `GET /events/:id/teams` — registered squads with rosters
 
 **Files:**
 - Modify: `backend/src/modules/events/event-registration.routes.ts`
 - Modify: `backend/src/tests/event-registration.test.ts`
 
 **Interfaces:**
-- Consumes: the `event_teams` / `team_members` rows written by Task 2.
+- Consumes: the `event_teams` / `team_members` rows written by Task 3.
 - Produces: `GET /events/:id/teams` returning `{ event_id, count, teams: Array<{ team_id, name, seed, group_no, players: Array<{ user_id, name, is_guest, role }> }> }`.
 
 **Why this is needed:** `GET /events/:id` already returns registered team rows, but **without rosters** — so an organizer cannot check whether squads are complete before generating fixtures in Phase 3, and no screen can show who is actually playing.
@@ -966,7 +1521,7 @@ for i in 1 2; do
 done
 ```
 
-Expected: 0 type errors; 4 files, 39 tests passing both times.
+Expected: 0 type errors; 5 files, 49 tests passing both times.
 
 - [ ] **Step 6: Verify live against the running app**
 
@@ -1006,7 +1561,7 @@ git commit -m "feat(events): list registered squads with full rosters"
 
 1. Migration `011` applied to both the test and dev databases.
 2. `npx tsc --noEmit` reports 0 errors.
-3. 39 tests pass across 4 files, twice in a row.
+3. 49 tests pass across 5 files, twice in a row.
 4. A captain can register a squad of mostly guests in one call; the guests exist as real `users` rows with `is_guest = true` and `created_by` set to the captain.
 5. Registration is refused when: the organizer hasn't opened it, the squad is under the format minimum, the team name clashes, the event is full, a `user_id` is unknown, or any squad member already plays for another team in that event.
 6. `GET /events/:id/teams` returns every squad with its full roster.
@@ -1017,6 +1572,7 @@ Per the spec's build order: `event_fixtures` and the generator/resolver/standing
 
 ## Gaps discovered while planning
 
-- **`events` has no `tier` column, but spec §3.3 says generated matches are stamped with `tier` "from the event".** That claim is currently unsupported. Phase 3 must either add `events.tier` or drop the idea and default matches to the referee's tier. Flagging now because it affects the fixture generator and the referee-tier gating rule.
-- **Spec §3.3 assumed `format` and `duration_minutes` live inside `events.rules` (JSON).** Task 1 makes `match_format` a real column instead — validated, typed and queryable. Phase 3 should do the same for `duration_minutes` rather than reading the JSON blob.
+- **`events.tier` — RESOLVED in this plan.** The gap was real and serious: spec §3.3 stamped matches with `tier` "from the event" while `events` had no such column, and Phase 3's generator would have created matches on an organizer's command with no tier authority at all. Tasks 1 and 2 add the column and the referee-derived cap. **Phase 3 still owes the third enforcement point:** every generated match must pass `canOfficiate(assignedReferee.referee_tier, match.tier)` or the whole generation transaction is refused.
+- **Spec §3.3 assumed `format` and `duration_minutes` live inside `events.rules` (JSON).** Task 1 makes `match_format` a real column instead — validated, typed and queryable. Phase 3/4 should add `events.match_duration_minutes` the same way rather than reading the JSON blob.
+- **Tier lock uses "any match exists for this event" as its proxy for "fixtures generated".** That is correct today because nothing else creates event matches, but once Phase 3 introduces `event_fixtures` the check should move to that table, which is the more direct signal.
 - **`POST /events/:id/teams` (the pre-existing endpoint) accepts events in status `upcoming` OR `registration`**, whereas the new `POST /events/:id/register` requires `registration` exactly, per the confirmed decision that organizers open registration explicitly. The two endpoints now disagree. Worth reconciling — most likely by tightening the old one — but out of scope here since nothing calls it yet.
