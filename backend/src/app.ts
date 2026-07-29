@@ -14,6 +14,7 @@ import { matchesRoutes } from './modules/matches/matches.routes'
 import { scoresRoutes } from './modules/scores/scores.routes'
 import { achievementsRoutes } from './modules/achievements/achievements.routes'
 import { refereeRoutes } from './modules/referee/referee.routes'
+import { organizerRoutes } from './modules/organizer/organizer.routes'
 import { adminRoutes } from './modules/admin/admin.routes'
 import { initFirebase } from './modules/auth/auth.service'
 
@@ -57,6 +58,7 @@ async function build() {
   await app.register(scoresRoutes, { prefix: V1_PREFIX })
   await app.register(achievementsRoutes, { prefix: V1_PREFIX })
   await app.register(refereeRoutes, { prefix: V1_PREFIX })
+  await app.register(organizerRoutes, { prefix: V1_PREFIX })
   await app.register(adminRoutes, { prefix: V1_PREFIX })
 
   // Global error handler
