@@ -1,13 +1,24 @@
-import type { ColumnType, Generated, JSONColumnType } from 'kysely'
+import type { ColumnType, Generated } from 'kysely'
 import type { MatchTier } from '../tiers'
 
 // Kysely table type definitions — mirrors the SQL schema exactly
+
+/**
+ * A jsonb column that we read as parsed JSON and also write as a plain object.
+ *
+ * Kysely's own `JSONColumnType<T>` types the insert/update side as `string`,
+ * which is correct only when you hand the driver a pre-stringified value.
+ * node-postgres already serialises plain objects for json/jsonb parameters, so
+ * for this stack `T` is the accurate write type. The select type is unchanged,
+ * so reads behave exactly as before.
+ */
+type JsonbColumn<T> = ColumnType<T, T, T>
 
 export interface SportTable {
   id: Generated<string>
   name: string
   slug: string
-  stat_schema: JSONColumnType<SportStatSchema>
+  stat_schema: JsonbColumn<SportStatSchema>
   icon_url: string | null
   active: Generated<boolean>
   created_at: Generated<Date>
@@ -29,6 +40,8 @@ export interface SportStatSchema {
 }
 
 export type UserRole = 'player' | 'referee' | 'admin'
+export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
+export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
 
 export interface UserTable {
   id: Generated<string>
@@ -92,7 +105,7 @@ export interface SportProfileTable {
   form_rating: number | null
   matches_played: Generated<number>
   wins: Generated<number>
-  career_stats: JSONColumnType<Record<string, number>>
+  career_stats: JsonbColumn<Record<string, number>>
   created_at: Generated<Date>
   updated_at: Generated<Date>
 }
@@ -132,13 +145,13 @@ export interface EventTable {
   city: string
   venue: string | null
   description: string | null
-  status: 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
+  status: EventStatus
   starts_at: Date | null
   ends_at: Date | null
   max_teams: number | null
   entry_fee: Generated<number>
   prize_pool: Generated<number>
-  rules: JSONColumnType<Record<string, unknown>>
+  rules: JsonbColumn<Record<string, unknown>>
   cover_url: string | null
   created_at: Generated<Date>
   updated_at: Generated<Date>
@@ -164,11 +177,11 @@ export interface MatchTable {
   scheduled_at: Date | null
   started_at: Date | null
   completed_at: Date | null
-  status: 'scheduled' | 'live' | 'completed' | 'cancelled'
+  status: MatchStatus
   tier: Generated<MatchTier>
   referee_id: string | null
-  home_score: JSONColumnType<Record<string, unknown>> | null
-  away_score: JSONColumnType<Record<string, unknown>> | null
+  home_score: JsonbColumn<Record<string, unknown>> | null
+  away_score: JsonbColumn<Record<string, unknown>> | null
   winner_team_id: string | null
   home_confirmed: Generated<boolean>
   away_confirmed: Generated<boolean>
@@ -182,7 +195,7 @@ export interface MatchPlayerStatsTable {
   user_id: string
   team_id: string
   sport_id: string
-  stats: JSONColumnType<Record<string, unknown>>
+  stats: JsonbColumn<Record<string, unknown>>
   position: string | null              // player's position for this match (for role baselines)
   match_rating: number | null          // final 0–10 star (referee-approved or algo)
   suggested_rating: number | null      // algo's 0–10 suggestion (audit)
@@ -210,7 +223,7 @@ export interface AchievementTable {
   user_id: string
   sport_id: string | null
   type: string
-  data: JSONColumnType<Record<string, unknown>>
+  data: JsonbColumn<Record<string, unknown>>
   match_id: string | null
   created_at: Generated<Date>
 }
@@ -227,7 +240,7 @@ export interface FeedEventTable {
   action_type: string
   entity_type: string
   entity_id: string
-  payload: JSONColumnType<Record<string, unknown>>
+  payload: JsonbColumn<Record<string, unknown>>
   created_at: Generated<Date>
 }
 

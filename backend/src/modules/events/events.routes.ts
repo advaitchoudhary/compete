@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
+import type { EventStatus } from '../../shared/db/types'
 
 const CreateEventBody = z.object({
   name: z.string().min(3).max(100),
@@ -75,7 +76,7 @@ export async function eventsRoutes(app: FastifyInstance) {
     const query = request.query as {
       sport?: string
       city?: string
-      status?: string
+      status?: EventStatus
       limit?: string
       cursor?: string
     }

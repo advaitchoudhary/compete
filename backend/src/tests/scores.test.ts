@@ -32,8 +32,15 @@ import { scoresRoutes } from '../modules/scores/scores.routes'
 import { sportsRoutes } from '../modules/sports/sports.routes'
 import { eventsRoutes } from '../modules/events/events.routes'
 import { enqueueRatingJob } from '../shared/queue/ratings.stream'
+import { getDb } from '../shared/db/client'
 
 const TEST_JWT_SECRET = 'test-jwt-secret-minimum-32-chars-long'
+
+// POST /v1/matches is gated by requireRole('referee','admin'), which performs a
+// fresh DB role lookup — so the acting user must genuinely exist with that role.
+// An admin (rather than a referee) keeps this test focused on body validation
+// instead of coupling it to the referee-tier rules.
+const TEST_ADMIN_ID = '550e8400-e29b-41d4-a716-446655440001'
 
 async function buildTestApp() {
   const app = Fastify({ logger: false })
@@ -58,9 +65,16 @@ describe('Match Lifecycle', () => {
   beforeAll(async () => {
     app = await buildTestApp()
     await app.ready()
+
+    await getDb()
+      .insertInto('users')
+      .values({ id: TEST_ADMIN_ID, name: 'Test Admin', role: 'admin' })
+      .onConflict((oc) => oc.column('id').doUpdateSet({ role: 'admin' }))
+      .execute()
   })
 
   afterAll(async () => {
+    await getDb().deleteFrom('users').where('id', '=', TEST_ADMIN_ID).execute()
     await app.close()
   })
 
@@ -100,12 +114,11 @@ describe('Match Lifecycle', () => {
 
   it('rejects mismatched teams in a match', async () => {
     const sameTeamId = '550e8400-e29b-41d4-a716-446655440000'
-    const userId = '550e8400-e29b-41d4-a716-446655440001'
 
     const res = await app.inject({
       method: 'POST',
       url: '/v1/matches',
-      headers: { authorization: makeAuthHeader(userId, app) },
+      headers: { authorization: makeAuthHeader(TEST_ADMIN_ID, app) },
       payload: {
         sport_slug: 'football',
         home_team_id: sameTeamId,

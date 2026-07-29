@@ -1,60 +1,28 @@
 """
 FastAPI app for the rating engine.
 Exposes HTTP endpoints for:
-  - Manual rating trigger (admin)
-  - Rating simulation / preview (useful for testing)
+  - Referee star-rating suggestions for a match
   - Health check
+
+The Elo ratings themselves are never computed over HTTP — they are produced by the
+Redis Streams consumer when a match completes (see consumer.py), so the ladder has
+exactly one writer.
 """
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import json
 import threading
 from config import settings
 from consumer import run_consumer, get_db, decide_winner, team_clean_sheet
-from algorithms.base import compute_performance_score, compute_new_rating, compute_star_rating
+from algorithms.base import compute_star_rating
 from algorithms import preprocess_stats
 
 app = FastAPI(title="AllSports Rating Engine", version="0.1.0")
 
 
-class RatingPreviewRequest(BaseModel):
-    sport_slug: str
-    player_stats: dict
-    opponent_avg_rating: float = 50.0
-    current_rating: float = 50.0
-    matches_played: int = 10
-    sport_schema: dict  # pass the full stat_schema from the sports table
-
-
-class RatingPreviewResponse(BaseModel):
-    performance_score: float
-    new_rating: float
-    delta: float
-    match_rating: float  # 0-10 scale as shown in app
-
-
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "rating-engine"}
-
-
-@app.post("/preview", response_model=RatingPreviewResponse)
-def preview_rating(req: RatingPreviewRequest):
-    """
-    Simulate what a player's new rating would be given their stats.
-    Used by the frontend to show a live preview while entering stats.
-    """
-    processed = preprocess_stats(req.sport_slug, req.player_stats)
-    perf = compute_performance_score(processed, req.sport_schema, req.opponent_avg_rating)
-    new_r = compute_new_rating(req.current_rating, perf, req.matches_played)
-
-    return RatingPreviewResponse(
-        performance_score=round(perf, 2),
-        new_rating=round(new_r, 2),
-        delta=round(new_r - req.current_rating, 2),
-        match_rating=round(perf / 10, 1),
-    )
 
 
 @app.post("/matches/{match_id}/suggest")

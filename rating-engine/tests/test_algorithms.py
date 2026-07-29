@@ -1,15 +1,40 @@
 """
-Unit tests for the rating algorithm.
+Unit tests for the Elo+ rating model.
 Run: pytest tests/ -v
+
+These cover the functions that are actually in the live pipeline:
+  compute_star_rating  → the 0–10 referee-approvable number
+  elo_delta            → the per-tier Elo change
+  blend_overall        → the headline "Elo number" across tiers
+  compute_form_rating  → recent-form weighting
+  preprocess_stats     → per-sport derived stats
+
+Most assertions are about *relationships* (more goals scores higher, a newcomer
+moves faster than a veteran) rather than exact numbers, because the star
+constants are explicitly tuneable. Where an absolute value is asserted, the
+arithmetic is spelled out in a comment so a deliberate retune is easy to update
+while an accidental sign flip still fails.
 """
 
 import pytest
+
 from algorithms.base import (
-    compute_performance_score,
-    compute_new_rating,
+    compute_star_rating,
+    elo_delta,
+    blend_overall,
     compute_form_rating,
+    WIN_BONUS,
+    CLEAN_SHEET_BONUS,
+    MIDFIELD_CLEAN_SHEET_BONUS,
 )
 from algorithms import preprocess_stats
+
+# compute_star_rating rounds to 1 decimal place, so the difference between two
+# star values can be off by a full rounding step in either direction. Comparing a
+# *difference* against a constant therefore needs this tolerance, not a tighter
+# one: e.g. a raw 5.25 rounds to 5.2 while 5.25 + 1.5 = 6.75 rounds to 6.8, a
+# difference of 1.6 for a bonus of 1.5.
+ROUNDING_TOLERANCE = 0.11
 
 FOOTBALL_SCHEMA = {
     "primary_metrics": {"goals": 3.0, "assists": 1.5, "tackles": 0.2, "saves": 0.5, "clean_sheet": 2.0},
@@ -21,99 +46,159 @@ FOOTBALL_SCHEMA = {
 CRICKET_SCHEMA = {
     "batting_metrics": {"runs": 1.0, "fours": 0.2, "sixes": 0.5},
     "bowling_metrics": {"wickets": 3.0, "maidens": 0.5},
-    "primary_metrics": {"runs": 1.0, "wickets": 3.0, "fours": 0.2, "sixes": 0.5, "maidens": 0.5},
+    "primary_metrics": {},
     "penalty_metrics": {},
     "efficiency_metrics": {},
     "max_stat_thresholds": {"runs": 300, "wickets": 10, "fours": 20, "sixes": 10, "maidens": 6},
 }
 
-BASKETBALL_SCHEMA = {
-    "primary_metrics": {"points": 1.0, "rebounds": 0.8, "assists": 1.0, "steals": 1.5, "blocks": 1.5},
-    "penalty_metrics": {"turnovers": -0.5, "fouls": -0.3},
-    "efficiency_metrics": {"fg_percentage": 0.5, "three_percentage": 0.5, "ft_percentage": 0.3},
-    "max_stat_thresholds": {"points": 60, "rebounds": 25, "assists": 20, "steals": 10, "blocks": 10},
-}
+
+class TestStarRating:
+    """The 0–10 star: position baseline + weighted contribution + bonuses."""
+
+    def test_goalkeeper_clean_sheet_with_saves(self):
+        # GK baseline 5.0 + (3 saves x 0.3) + clean-sheet 2.5, nothing conceded = 8.4
+        star = compute_star_rating({"saves": 3, "goals_conceded": 0}, FOOTBALL_SCHEMA, position="GK")
+        assert abs(star - 8.4) < 0.05, f"expected ~8.4, got {star}"
+
+    def test_goalkeeper_conceding_scores_lower_than_clean_sheet(self):
+        clean = compute_star_rating({"saves": 3, "goals_conceded": 0}, FOOTBALL_SCHEMA, position="GK")
+        leaky = compute_star_rating({"saves": 3, "goals_conceded": 2}, FOOTBALL_SCHEMA, position="GK")
+        assert clean > leaky
+
+    def test_busy_goalkeeper_is_not_punished_for_doing_his_job(self):
+        # Guards a real regression: a keeper on a winning team once scored 0.3
+        # because defensive weights were tiny and goals_conceded penalised him.
+        # A keeper who made saves must never land near the floor.
+        star = compute_star_rating({"saves": 3, "goals_conceded": 1}, FOOTBALL_SCHEMA, position="GK")
+        assert star > 4.0, f"a keeper with 3 saves should not be near the floor, got {star}"
+
+    def test_goalkeeper_inferred_without_position(self):
+        # No position recorded, but keeper-only stats present → GK path.
+        star = compute_star_rating({"saves": 4, "goals_conceded": 0}, FOOTBALL_SCHEMA)
+        assert star > 5.0
+
+    def test_defender_baseline_beats_forward_baseline(self):
+        # With no stats at all a CB (baseline 4) outranks a ST (baseline 3):
+        # an unremarkable defensive shift is not a bad performance.
+        cb = compute_star_rating({}, FOOTBALL_SCHEMA, position="CB")
+        st = compute_star_rating({}, FOOTBALL_SCHEMA, position="ST")
+        assert cb > st
+
+    def test_scoring_striker_beats_quiet_striker(self):
+        quiet = compute_star_rating({"goals": 0}, FOOTBALL_SCHEMA, position="ST")
+        sharp = compute_star_rating({"goals": 2}, FOOTBALL_SCHEMA, position="ST")
+        assert sharp > quiet
+
+    def test_more_goals_scores_higher(self):
+        one = compute_star_rating({"goals": 1}, FOOTBALL_SCHEMA, position="ST")
+        two = compute_star_rating({"goals": 2}, FOOTBALL_SCHEMA, position="ST")
+        assert two > one
+
+    def test_win_bonus_is_flat_and_applied(self):
+        lost = compute_star_rating({"goals": 1}, FOOTBALL_SCHEMA, position="ST", won=False)
+        won = compute_star_rating({"goals": 1}, FOOTBALL_SCHEMA, position="ST", won=True)
+        assert abs((won - lost) - WIN_BONUS) < ROUNDING_TOLERANCE
+
+    def test_clean_sheet_rewards_backline_more_than_midfield(self):
+        cb_plain = compute_star_rating({}, FOOTBALL_SCHEMA, position="CB")
+        cb_clean = compute_star_rating({}, FOOTBALL_SCHEMA, position="CB", clean_sheet=True)
+        cm_plain = compute_star_rating({}, FOOTBALL_SCHEMA, position="CM")
+        cm_clean = compute_star_rating({}, FOOTBALL_SCHEMA, position="CM", clean_sheet=True)
+
+        assert abs((cb_clean - cb_plain) - CLEAN_SHEET_BONUS) < ROUNDING_TOLERANCE
+        assert abs((cm_clean - cm_plain) - MIDFIELD_CLEAN_SHEET_BONUS) < ROUNDING_TOLERANCE
+        assert (cb_clean - cb_plain) > (cm_clean - cm_plain)
+
+    def test_clean_sheet_gives_forwards_nothing(self):
+        plain = compute_star_rating({"goals": 1}, FOOTBALL_SCHEMA, position="ST")
+        clean = compute_star_rating({"goals": 1}, FOOTBALL_SCHEMA, position="ST", clean_sheet=True)
+        assert abs(clean - plain) < 0.05, "a striker earns no credit for the defence's clean sheet"
+
+    def test_red_card_reduces_the_star(self):
+        clean = compute_star_rating({"goals": 1, "red_cards": 0}, FOOTBALL_SCHEMA, position="ST")
+        sent_off = compute_star_rating({"goals": 1, "red_cards": 1}, FOOTBALL_SCHEMA, position="ST")
+        assert sent_off < clean
+
+    def test_star_is_clamped_to_0_10(self):
+        absurd = compute_star_rating(
+            {"goals": 50, "assists": 50, "tackles": 99}, FOOTBALL_SCHEMA, position="ST", won=True
+        )
+        assert 0.0 <= absurd <= 10.0
+
+        disaster = compute_star_rating({"red_cards": 5}, FOOTBALL_SCHEMA, position="ST")
+        assert 0.0 <= disaster <= 10.0
+
+    def test_cricket_uses_batting_and_bowling_metrics(self):
+        quiet = compute_star_rating({"runs": 2}, CRICKET_SCHEMA, position="BAT")
+        century = compute_star_rating({"runs": 100, "fours": 8, "sixes": 3}, CRICKET_SCHEMA, position="BAT")
+        assert century > quiet
 
 
-class TestPerformanceScore:
+class TestEloDelta:
+    """Per-tier Elo change: result vs expectation, scaled by K, margin and star."""
 
-    def test_zero_stats_gives_low_score(self):
-        stats = {"goals": 0, "assists": 0, "tackles": 0}
-        score = compute_performance_score(stats, FOOTBALL_SCHEMA, 50.0)
-        assert score < 20, "Zero stats should produce a low performance score"
+    def test_win_against_equal_opponent_gains(self):
+        assert elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0) > 0
 
-    def test_excellent_stats_give_high_score(self):
-        stats = {"goals": 3, "assists": 2, "tackles": 8, "clean_sheet": 0}
-        score = compute_performance_score(stats, FOOTBALL_SCHEMA, 50.0)
-        assert score > 50, f"Excellent stats should produce score > 50, got {score}"
+    def test_loss_against_equal_opponent_drops(self):
+        assert elo_delta(50.0, 50.0, 0.0, 10, 1.0, 5.0) < 0
 
-    def test_red_card_penalizes_score(self):
-        good_stats = {"goals": 1, "assists": 1, "red_cards": 0}
-        bad_stats  = {"goals": 1, "assists": 1, "red_cards": 1}
-        good_score = compute_performance_score(good_stats, FOOTBALL_SCHEMA, 50.0)
-        bad_score  = compute_performance_score(bad_stats, FOOTBALL_SCHEMA, 50.0)
-        assert good_score > bad_score, "Red card should reduce performance score"
+    def test_draw_against_equal_opponent_is_neutral(self):
+        # actual == expected, and a mid star (5/10) means the nudge is zero.
+        assert abs(elo_delta(50.0, 50.0, 0.5, 10, 1.0, 5.0)) < 0.01
 
-    def test_strong_opposition_boosts_score(self):
-        stats = {"goals": 1, "assists": 0}
-        low_opp_score  = compute_performance_score(stats, FOOTBALL_SCHEMA, 20.0)
-        high_opp_score = compute_performance_score(stats, FOOTBALL_SCHEMA, 80.0)
-        assert high_opp_score > low_opp_score, "Same performance vs stronger opponent should score higher"
+    def test_beating_a_stronger_opponent_gains_more(self):
+        vs_weaker = elo_delta(50.0, 30.0, 1.0, 10, 1.0, 5.0)
+        vs_stronger = elo_delta(50.0, 70.0, 1.0, 10, 1.0, 5.0)
+        assert vs_stronger > vs_weaker
 
-    def test_score_always_in_valid_range(self):
-        extreme_stats = {"goals": 999, "assists": 999, "tackles": 999}
-        score = compute_performance_score(extreme_stats, FOOTBALL_SCHEMA, 100.0)
-        assert 0 <= score <= 100, f"Score must be 0-100, got {score}"
+    def test_star_nudges_the_delta(self):
+        anonymous = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 2.0)
+        man_of_the_match = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 9.0)
+        assert man_of_the_match > anonymous
 
-        zero_stats = {}
-        score = compute_performance_score(zero_stats, FOOTBALL_SCHEMA, 0.0)
-        assert 0 <= score <= 100
+    def test_newcomer_moves_faster_than_veteran(self):
+        newcomer = abs(elo_delta(50.0, 50.0, 1.0, 2, 1.0, 5.0))
+        veteran = abs(elo_delta(50.0, 50.0, 1.0, 100, 1.0, 5.0))
+        assert newcomer > veteran, "cold-start K must move new players faster"
 
-    def test_cricket_century_scores_well(self):
-        stats = preprocess_stats("cricket", {"runs": 100, "balls_faced": 85, "fours": 8, "sixes": 3})
-        score = compute_performance_score(stats, CRICKET_SCHEMA, 50.0)
-        assert score > 45, f"A cricket century should produce a high score, got {score}"
+    def test_bigger_margin_amplifies_the_delta(self):
+        narrow = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0)
+        thrashing = elo_delta(50.0, 50.0, 1.0, 10, 5.0, 5.0)
+        assert thrashing > narrow
 
-    def test_basketball_triple_double(self):
-        raw_stats = {
-            "points": 25, "rebounds": 10, "assists": 10,
-            "steals": 2, "blocks": 1, "turnovers": 3, "fouls": 2,
-            "fg_made": 9, "fg_attempted": 18,
-            "three_made": 3, "three_attempted": 7,
-            "ft_made": 4, "ft_attempted": 4,
-        }
-        stats = preprocess_stats("basketball", raw_stats)
-        score = compute_performance_score(stats, BASKETBALL_SCHEMA, 50.0)
-        assert score > 55, f"Triple double should produce a strong score, got {score}"
+    def test_margin_multiplier_saturates(self):
+        big = elo_delta(50.0, 50.0, 1.0, 10, 6.0, 5.0)
+        absurd = elo_delta(50.0, 50.0, 1.0, 10, 20.0, 5.0)
+        assert abs(big - absurd) < 0.01, "margin multiplier must cap, not run away"
 
 
-class TestNewRating:
+class TestBlendOverall:
+    """The headline Elo number: per-tier ratings weighted by tier and volume."""
 
-    def test_great_performance_increases_rating(self):
-        new_r = compute_new_rating(50.0, 80.0, 10)
-        assert new_r > 50.0, "High performance should increase rating"
+    def test_no_history_returns_default(self):
+        assert blend_overall([]) == 50.0
 
-    def test_poor_performance_decreases_rating(self):
-        new_r = compute_new_rating(70.0, 20.0, 10)
-        assert new_r < 70.0, "Poor performance should decrease rating"
+    def test_single_tier_returns_that_rating(self):
+        assert abs(blend_overall([("amateur", 63.5, 12)]) - 63.5) < 0.01
 
-    def test_rating_stays_in_1_to_99(self):
-        # Push rating to extremes
-        r = compute_new_rating(99.0, 100.0, 200)
-        assert r <= 99.0
-        r = compute_new_rating(1.0, 0.0, 200)
-        assert r >= 1.0
+    def test_regular_semi_pro_outweighs_one_off_pro(self):
+        # The headline design claim: a substantiated semi-pro record carries more
+        # of the blend than a single flattering pro appearance.
+        blended = blend_overall([("semi_pro", 70.0, 20), ("pro", 95.0, 1)])
+        assert abs(blended - 70.0) < abs(blended - 95.0)
 
-    def test_new_player_changes_faster(self):
-        # New player (5 matches) vs veteran (200 matches), same performance
-        new_delta   = abs(compute_new_rating(50.0, 90.0, 5)   - 50.0)
-        vet_delta   = abs(compute_new_rating(50.0, 90.0, 200) - 50.0)
-        assert new_delta > vet_delta, "New players should have higher K-factor (change more per match)"
+    def test_volume_pulls_the_blend_toward_a_tier(self):
+        light = blend_overall([("amateur", 90.0, 1), ("pro", 40.0, 30)])
+        heavy = blend_overall([("amateur", 90.0, 30), ("pro", 40.0, 30)])
+        assert heavy > light
 
-    def test_average_performance_gives_minimal_change(self):
-        # Performance score = current rating → small change
-        new_r = compute_new_rating(50.0, 50.0, 30)
-        assert abs(new_r - 50.0) < 3, f"Average performance should change rating minimally, got {new_r}"
+    def test_higher_tier_carries_more_weight_at_equal_volume(self):
+        # Equal volume, different ratings: the pro tier's weight should drag the
+        # blend above the plain arithmetic midpoint of 60.
+        blended = blend_overall([("amateur", 40.0, 10), ("pro", 80.0, 10)])
+        assert blended > 60.0, "the higher tier should pull above the plain average"
 
 
 class TestFormRating:
@@ -122,22 +207,20 @@ class TestFormRating:
         assert compute_form_rating([]) == 50.0
 
     def test_recent_scores_weighted_more(self):
-        # Scores improving over time — form should reflect recent high scores
-        scores = [30.0, 40.0, 50.0, 60.0, 80.0]  # recent = high
+        scores = [30.0, 40.0, 50.0, 60.0, 80.0]  # improving
         form = compute_form_rating(scores)
         simple_avg = sum(scores) / len(scores)
-        assert form > simple_avg, "Recent good form should produce higher form rating than simple average"
+        assert form > simple_avg, "recent good form should beat the flat average"
 
     def test_uses_last_5_only(self):
-        many_low  = [10.0] * 20 + [90.0, 90.0, 90.0, 90.0, 90.0]
-        form = compute_form_rating(many_low)
-        assert form > 80.0, "Should use last 5 scores (all high), ignoring older low scores"
+        many_low = [10.0] * 20 + [90.0] * 5
+        assert compute_form_rating(many_low) > 80.0
 
 
 class TestPreprocessors:
 
     def test_cricket_computes_strike_rate_bonus(self):
-        stats = preprocess_stats("cricket", {"runs": 60, "balls_faced": 30})  # SR = 200
+        stats = preprocess_stats("cricket", {"runs": 60, "balls_faced": 30})  # SR 200
         assert "strike_rate_bonus" in stats
         assert stats["strike_rate_bonus"] > 0
 
@@ -148,5 +231,4 @@ class TestPreprocessors:
 
     def test_unknown_sport_returns_unchanged(self):
         original = {"some_stat": 5}
-        result = preprocess_stats("volleyball", original)
-        assert result == original
+        assert preprocess_stats("volleyball", original) == original

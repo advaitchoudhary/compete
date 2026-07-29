@@ -11,9 +11,6 @@ jobs:
   backend:
     name: Backend (Node.js)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
 
     services:
       postgres:
@@ -44,21 +41,28 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          # This is an npm workspaces monorepo — the root package.json declares
+          # workspaces: [backend, realtime], so there is exactly ONE lockfile and
+          # it lives at the repo root. backend/package-lock.json does not exist.
+          cache-dependency-path: package-lock.json
 
+      # `npm ci` must run at the root for the same reason: a workspace subdir
+      # has no lockfile of its own. This installs backend + realtime together
+      # and hoists node_modules to the root.
       - name: Install dependencies
         run: npm ci
 
       - name: Type check
         run: npx tsc --noEmit
+        working-directory: backend
 
       - name: Run migrations
-        run: npm run db:migrate
+        run: npm --workspace backend run db:migrate
         env:
           DATABASE_URL: postgresql://allsports:password@localhost:5432/allsports_test
 
       - name: Run tests
-        run: npm test
+        run: npm --workspace backend run test
         env:
           DATABASE_URL: postgresql://allsports:password@localhost:5432/allsports_test
           REDIS_URL: redis://localhost:6379

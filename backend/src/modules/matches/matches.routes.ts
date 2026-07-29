@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
+import type { MatchStatus } from '../../shared/db/types'
 import { getRedisPub, PubSubChannels } from '../../shared/redis/client'
 import { assertMatchReferee } from './match.access'
 import { MATCH_TIERS, canOfficiate } from '../../shared/tiers'
@@ -75,7 +76,7 @@ export async function matchesRoutes(app: FastifyInstance) {
   // GET /matches — list matches with optional filters
   app.get('/matches', { preHandler: requireAuth }, async (request, reply) => {
     const query = request.query as {
-      status?: string       // 'scheduled' | 'live' | 'completed' | 'cancelled'
+      status?: MatchStatus
       sport_slug?: string   // 'cricket' | 'football' | 'badminton' | 'basketball'
       limit?: string
       offset?: string

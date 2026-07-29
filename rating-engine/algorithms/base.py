@@ -1,115 +1,32 @@
 """
-Sport-agnostic Elo-based rating algorithm.
+The "Elo+" rating model.
 
-Every sport defines its stat_schema in the database with:
-  - primary_metrics: {stat_name: weight} — positive contributions
-  - penalty_metrics: {stat_name: weight} — negative contributions (yellow cards, turnovers)
-  - max_stat_thresholds: {stat_name: max_value} — for normalization
-  - efficiency_metrics: {stat_name: weight} — ratio-based stats (FG%, pass accuracy)
+Two separate numbers come out of a match, and keeping them separate is the whole
+point of this design:
 
-The algorithm:
-1. Compute base performance score (0-100) from weighted stats
-2. Adjust for opposition strength
-3. Apply Elo-like delta to existing rating
+  * The **Elo rating** (0–100) is system-owned and derives from the *result* —
+    win/draw/loss against the opponent average, scaled by margin of victory, with
+    a K-factor that shrinks as a player accumulates matches. Held per tier
+    (amateur / semi_pro / pro / legends) in the tier_ratings ladder, then blended
+    into one headline number by tier weight and volume. See `elo_delta` and
+    `blend_overall`.
+
+  * The **star rating** (0–10) is the human-facing "recognition" number computed
+    from a player's own stats on top of a position baseline (a keeper is judged on
+    saves and clean sheets, a striker on goals). A referee may adjust it within
+    hard bounds. It feeds Elo only indirectly, as a nudge — so a referee can never
+    move Elo directly, which is what keeps the ladder trustworthy. See
+    `compute_star_rating`.
+
+Every sport supplies a stat_schema from the database:
+  - primary_metrics:      {stat: weight}    positive contributions
+  - penalty_metrics:      {stat: weight}    negative (cards, turnovers)
+  - efficiency_metrics:   {stat: weight}    ratio stats (FG%, pass accuracy)
+  - max_stat_thresholds:  {stat: max}       normalisation ceilings
 """
 
 from typing import Any
 import math
-
-
-def compute_performance_score(
-    player_stats: dict[str, Any],
-    sport_schema: dict[str, Any],
-    opponent_avg_rating: float,
-) -> float:
-    """
-    Returns a performance score in [0, 100].
-    """
-    thresholds = sport_schema.get("max_stat_thresholds", {})
-    primary = sport_schema.get("primary_metrics", {})
-    penalty = sport_schema.get("penalty_metrics", {})
-    efficiency = sport_schema.get("efficiency_metrics", {})
-
-    # --- Primary stats (positive) ---
-    positive_score = 0.0
-    positive_weight_total = sum(primary.values()) if primary else 1.0
-
-    for stat, weight in primary.items():
-        value = float(player_stats.get(stat, 0))
-        max_val = float(thresholds.get(stat, 100))
-        # Normalize: cap at threshold, then scale to 0-1
-        normalized = min(value / max_val, 1.0) if max_val > 0 else 0.0
-        positive_score += normalized * weight
-
-    # Scale to 0-80 (leaving 20 points headroom for elite performance)
-    if positive_weight_total > 0:
-        positive_score = (positive_score / positive_weight_total) * 80
-    else:
-        positive_score = 0.0
-
-    # --- Penalty stats (negative) ---
-    penalty_score = 0.0
-    for stat, weight in penalty.items():
-        value = float(player_stats.get(stat, 0))
-        max_val = float(thresholds.get(stat, 10))
-        normalized = min(value / max_val, 1.0) if max_val > 0 else 0.0
-        penalty_score += normalized * abs(weight)
-
-    # Cap penalties at 20 points deduction
-    penalty_score = min(penalty_score * 5, 20)
-
-    # --- Efficiency stats (FG%, pass accuracy — only meaningful above 5+ attempts) ---
-    efficiency_bonus = 0.0
-    for stat, weight in efficiency.items():
-        value = float(player_stats.get(stat, 0))
-        # Already a percentage (0–100), scale contribution
-        efficiency_bonus += (value / 100.0) * weight
-
-    # Normalize efficiency bonus to 0-10
-    eff_weight_total = sum(efficiency.values()) if efficiency else 1
-    efficiency_bonus = (efficiency_bonus / eff_weight_total) * 10 if eff_weight_total else 0
-
-    raw_score = positive_score - penalty_score + efficiency_bonus
-    raw_score = max(0.0, min(100.0, raw_score))
-
-    # --- Opposition strength modifier ---
-    # Performing well against a 70-rated opponent is worth more than vs 30-rated
-    # Modifier range: 0.75x (vs weak) to 1.25x (vs strong)
-    opp_modifier = 0.75 + (opponent_avg_rating / 100.0) * 0.50
-
-    final_score = raw_score * opp_modifier
-    return round(max(0.0, min(100.0, final_score)), 2)
-
-
-def compute_new_rating(
-    old_rating: float,
-    performance_score: float,
-    matches_played: int,
-) -> float:
-    """
-    Elo-like update.
-
-    K-factor decreases as player matures (more data = more stable rating).
-    New players (< 20 matches) change faster — large K factor.
-    Veterans (100+ matches) change slowly — small K factor.
-    """
-    if matches_played < 10:
-        k = 40
-    elif matches_played < 30:
-        k = 30
-    elif matches_played < 100:
-        k = 20
-    else:
-        k = 10
-
-    expected = old_rating / 100.0
-    actual = performance_score / 100.0
-    delta = k * (actual - expected)
-
-    new_rating = old_rating + delta
-    # Soft floor/ceiling: ratings asymptotically approach limits
-    new_rating = max(1.0, min(99.0, new_rating))
-    return round(new_rating, 2)
 
 
 # ════════════════════════════════════════════════════════════════════
