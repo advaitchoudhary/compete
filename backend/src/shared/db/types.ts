@@ -14,6 +14,17 @@ import type { MatchTier } from '../tiers'
  */
 type JsonbColumn<T> = ColumnType<T, T, T>
 
+/**
+ * A jsonb column that also carries a DB-side `DEFAULT '{}'::jsonb`, so it may be
+ * omitted on insert and Postgres fills it in.
+ *
+ * These columns currently have that default and could use this type too:
+ * `sports.stat_schema`, `sport_profiles.career_stats`, `match_player_stats.stats`,
+ * `achievements.data`, `feed_events.payload`. They are left as required for now
+ * so this change stays scoped; converting them is safe whenever each is touched.
+ */
+type JsonbColumnWithDefault<T> = ColumnType<T, T | undefined, T>
+
 export interface SportTable {
   id: Generated<string>
   name: string
@@ -151,7 +162,7 @@ export interface EventTable {
   max_teams: number | null
   entry_fee: Generated<number>
   prize_pool: Generated<number>
-  rules: JsonbColumn<Record<string, unknown>>
+  rules: JsonbColumnWithDefault<Record<string, unknown>>
   cover_url: string | null
   created_at: Generated<Date>
   updated_at: Generated<Date>

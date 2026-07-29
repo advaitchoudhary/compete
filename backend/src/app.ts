@@ -10,6 +10,7 @@ import { usersRoutes } from './modules/users/users.routes'
 import { sportsRoutes } from './modules/sports/sports.routes'
 import { teamsRoutes } from './modules/teams/teams.routes'
 import { eventsRoutes } from './modules/events/events.routes'
+import { eventRefereesRoutes } from './modules/events/event-referees.routes'
 import { matchesRoutes } from './modules/matches/matches.routes'
 import { scoresRoutes } from './modules/scores/scores.routes'
 import { achievementsRoutes } from './modules/achievements/achievements.routes'
@@ -54,6 +55,7 @@ async function build() {
   await app.register(sportsRoutes, { prefix: V1_PREFIX })
   await app.register(teamsRoutes, { prefix: V1_PREFIX })
   await app.register(eventsRoutes, { prefix: V1_PREFIX })
+  await app.register(eventRefereesRoutes, { prefix: V1_PREFIX })
   await app.register(matchesRoutes, { prefix: V1_PREFIX })
   await app.register(scoresRoutes, { prefix: V1_PREFIX })
   await app.register(achievementsRoutes, { prefix: V1_PREFIX })
