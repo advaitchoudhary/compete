@@ -53,6 +53,7 @@ export interface SportStatSchema {
 export type UserRole = 'player' | 'referee' | 'organizer' | 'admin'
 export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
 export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
+export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'
 
 export interface UserTable {
   id: Generated<string>
@@ -153,6 +154,11 @@ export interface EventTable {
   sport_id: string
   organizer_id: string
   format: 'knockout' | 'league' | 'round_robin' | 'group_knockout' | 'casual'
+  // Competition grade of the whole tournament; every generated match inherits it.
+  // Capped by the lowest referee_tier among assigned referees — see spec §3.1.1.
+  tier: Generated<MatchTier>
+  // Players per side — distinct from `format`, which is the tournament structure.
+  match_format: MatchFormat | null
   city: string
   venue: string | null
   description: string | null

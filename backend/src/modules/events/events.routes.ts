@@ -8,6 +8,10 @@ const CreateEventBody = z.object({
   name: z.string().min(3).max(100),
   sport_slug: z.string(),
   format: z.enum(['knockout', 'league', 'round_robin', 'group_knockout', 'casual']),
+  // Players per side. `tier` is deliberately NOT accepted here — a new event has
+  // no referees yet, so nothing above 'amateur' could be authorised. Set it
+  // afterwards via PATCH /events/:id/tier. See spec §3.1.1.
+  match_format: z.enum(['5-a-side', '7-a-side', '11-a-side']).optional(),
   city: z.string().min(2).max(50),
   venue: z.string().max(100).optional(),
   description: z.string().max(500).optional(),
@@ -47,6 +51,7 @@ export async function eventsRoutes(app: FastifyInstance) {
         sport_id: sport.id,
         organizer_id: request.userId,
         format: body.data.format,
+        match_format: body.data.match_format ?? null,
         city: body.data.city,
         venue: body.data.venue ?? null,
         description: body.data.description ?? null,
