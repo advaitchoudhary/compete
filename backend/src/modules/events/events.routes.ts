@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requireAuth } from '../../shared/middleware/auth'
+import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
 import type { EventStatus } from '../../shared/db/types'
 
@@ -25,8 +25,8 @@ const RegisterTeamBody = z.object({
 })
 
 export async function eventsRoutes(app: FastifyInstance) {
-  // POST /events
-  app.post('/events', { preHandler: requireAuth }, async (request, reply) => {
+  // POST /events — only verified organizers (or admins) may run a tournament.
+  app.post('/events', { preHandler: requireRole('organizer', 'admin') }, async (request, reply) => {
     const body = CreateEventBody.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 

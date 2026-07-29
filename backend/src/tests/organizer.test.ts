@@ -33,6 +33,24 @@ const TEST_JWT_SECRET = 'test-jwt-secret-minimum-32-chars-long'
 const PLAYER_ID = '550e8400-e29b-41d4-a716-4466554401a1'
 const ADMIN_ID = '550e8400-e29b-41d4-a716-4466554401a2'
 const REFEREE_ID = '550e8400-e29b-41d4-a716-4466554401a3'
+const OUTSIDER_ID = '550e8400-e29b-41d4-a716-4466554401a4'
+
+const ALL_TEST_USERS = [PLAYER_ID, ADMIN_ID, REFEREE_ID, OUTSIDER_ID]
+
+/**
+ * Remove everything these tests could have created, children first.
+ *
+ * Run in both beforeAll and afterAll: if an assertion fails mid-test the
+ * inline cleanup never runs, and a leftover events row would then block
+ * deleting its owner via events_organizer_id_fkey — poisoning every later run.
+ */
+async function cleanupTestData() {
+  const db = getDb()
+  await db.deleteFrom('events').where('organizer_id', 'in', ALL_TEST_USERS).execute()
+  await db.deleteFrom('referee_applications').where('user_id', 'in', ALL_TEST_USERS).execute()
+  await db.deleteFrom('organizer_scores').where('user_id', 'in', ALL_TEST_USERS).execute()
+  await db.deleteFrom('users').where('id', 'in', ALL_TEST_USERS).execute()
+}
 
 async function buildTestApp() {
   const app = Fastify({ logger: false })
@@ -72,18 +90,14 @@ describe('Organizer identity', () => {
     app = await buildTestApp()
     await app.ready()
 
+    await cleanupTestData()
     await seedUser(PLAYER_ID, 'Test Player', 'player')
     await seedUser(ADMIN_ID, 'Test Admin', 'admin')
     await seedUser(REFEREE_ID, 'Test Referee', 'referee', 'amateur')
   })
 
   afterAll(async () => {
-    const db = getDb()
-    await db
-      .deleteFrom('referee_applications')
-      .where('user_id', 'in', [PLAYER_ID, ADMIN_ID, REFEREE_ID])
-      .execute()
-    await db.deleteFrom('users').where('id', 'in', [PLAYER_ID, ADMIN_ID, REFEREE_ID]).execute()
+    await cleanupTestData()
     await app.close()
   })
 
@@ -211,5 +225,45 @@ describe('Organizer identity', () => {
       headers: { authorization: makeAuthHeader(ADMIN_ID, app) },
     })
     expect(res.statusCode).toBe(400)
+  })
+
+  it('a plain player cannot create an event', async () => {
+    // PLAYER_ID was promoted to organizer earlier in this file, so use a
+    // throwaway player seeded just for this check. cleanupTestData() removes it.
+    await seedUser(OUTSIDER_ID, 'Outsider', 'player')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/events',
+      headers: { authorization: makeAuthHeader(OUTSIDER_ID, app) },
+      payload: {
+        name: 'Unauthorised Cup',
+        sport_slug: 'football',
+        format: 'knockout',
+        city: 'Mumbai',
+      },
+    })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('an approved organizer can create an event', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/events',
+      headers: { authorization: makeAuthHeader(PLAYER_ID, app) },
+      payload: {
+        name: 'Sunday Turf Cup',
+        sport_slug: 'football',
+        format: 'group_knockout',
+        city: 'Mumbai',
+        venue: 'Powai Turf Arena',
+        max_teams: 8,
+        entry_fee: 200000,
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const body = res.json()
+    expect(body.organizer_id).toBe(PLAYER_ID)
+    expect(body.format).toBe('group_knockout')
   })
 })
