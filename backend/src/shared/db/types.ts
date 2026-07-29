@@ -39,7 +39,7 @@ export interface SportStatSchema {
   event_types?: string[]
 }
 
-export type UserRole = 'player' | 'referee' | 'admin'
+export type UserRole = 'player' | 'referee' | 'organizer' | 'admin'
 export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
 export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
 
@@ -75,8 +75,8 @@ export interface RefereeApplicationTable {
   certification: string | null
   bio: string | null
   status: Generated<'pending' | 'approved' | 'rejected'>
-  // 'initial' = becoming a referee; 'upgrade' = requesting a higher tier
-  request_type: Generated<'initial' | 'upgrade'>
+  // 'initial' = becoming a referee; 'upgrade' = higher tier; 'organizer' = run tournaments
+  request_type: Generated<'initial' | 'upgrade' | 'organizer'>
   requested_tier: MatchTier | null
   reviewed_by: string | null
   reviewed_at: Date | null
@@ -164,6 +164,14 @@ export interface EventTeamTable {
   group_no: string | null
   points: Generated<number>
   registered_at: Generated<Date>
+}
+
+export interface EventRefereeTable {
+  event_id: string
+  user_id: string
+  // Pins a referee to one pitch for the day (e.g. 'Pitch 1'). NULL = unassigned.
+  pitch_label: string | null
+  added_at: Generated<Date>
 }
 
 export interface MatchTable {
@@ -261,6 +269,7 @@ export interface Database {
   team_members: TeamMemberTable
   events: EventTable
   event_teams: EventTeamTable
+  event_referees: EventRefereeTable
   matches: MatchTable
   match_player_stats: MatchPlayerStatsTable
   rating_history: RatingHistoryTable
