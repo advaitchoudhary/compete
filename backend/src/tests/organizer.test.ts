@@ -160,4 +160,56 @@ describe('Organizer identity', () => {
     expect(body.is_organizer).toBe(false)
     expect(body.application.request_type).toBe('organizer')
   })
+
+  it('admin approval promotes the applicant to organizer, not referee', async () => {
+    const db = getDb()
+    const application = await db
+      .selectFrom('referee_applications')
+      .select('id')
+      .where('user_id', '=', PLAYER_ID)
+      .where('request_type', '=', 'organizer')
+      .where('status', '=', 'pending')
+      .executeTakeFirstOrThrow()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/admin/referee-applications/${application.id}/approve`,
+      headers: { authorization: makeAuthHeader(ADMIN_ID, app) },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().approved).toBe(true)
+
+    const promoted = await db
+      .selectFrom('users')
+      .select(['role', 'referee_tier'])
+      .where('id', '=', PLAYER_ID)
+      .executeTakeFirstOrThrow()
+
+    expect(promoted.role).toBe('organizer')
+    // An organizer never officiates, so they must not be granted a referee tier.
+    expect(promoted.referee_tier).toBeNull()
+  })
+
+  it('GET /v1/admin/referee-applications can filter by request_type', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/admin/referee-applications?status=approved&request_type=organizer',
+      headers: { authorization: makeAuthHeader(ADMIN_ID, app) },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.applications.length).toBeGreaterThanOrEqual(1)
+    for (const a of body.applications) {
+      expect(a.request_type).toBe('organizer')
+    }
+  })
+
+  it('rejects an invalid request_type filter', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/admin/referee-applications?request_type=bogus',
+      headers: { authorization: makeAuthHeader(ADMIN_ID, app) },
+    })
+    expect(res.statusCode).toBe(400)
+  })
 })

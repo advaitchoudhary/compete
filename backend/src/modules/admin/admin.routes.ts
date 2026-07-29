@@ -16,7 +16,12 @@ export async function adminRoutes(app: FastifyInstance) {
     '/admin/referee-applications',
     { preHandler: requireRole('admin') },
     async (request, reply) => {
-      const query = request.query as { status?: string; limit?: string; offset?: string }
+      const query = request.query as {
+        status?: string
+        request_type?: string
+        limit?: string
+        offset?: string
+      }
       const status = query.status ?? 'pending'
       const limit = Math.min(Number(query.limit ?? 50), 100)
       const offset = Number(query.offset ?? 0)
@@ -24,8 +29,14 @@ export async function adminRoutes(app: FastifyInstance) {
       if (!['pending', 'approved', 'rejected'].includes(status)) {
         return reply.code(400).send({ error: 'Invalid status filter' })
       }
+      if (
+        query.request_type &&
+        !['initial', 'upgrade', 'organizer'].includes(query.request_type)
+      ) {
+        return reply.code(400).send({ error: 'Invalid request_type filter' })
+      }
 
-      const applications = await getDb()
+      let q = getDb()
         .selectFrom('referee_applications as ra')
         .innerJoin('users as u', 'u.id', 'ra.user_id')
         .select([
@@ -40,9 +51,23 @@ export async function adminRoutes(app: FastifyInstance) {
         .orderBy('ra.created_at', 'desc')
         .limit(limit)
         .offset(offset)
-        .execute()
 
-      return { status, count: applications.length, applications }
+      if (query.request_type) {
+        q = q.where(
+          'ra.request_type',
+          '=',
+          query.request_type as 'initial' | 'upgrade' | 'organizer'
+        )
+      }
+
+      const applications = await q.execute()
+
+      return {
+        status,
+        request_type: query.request_type ?? null,
+        count: applications.length,
+        applications,
+      }
     }
   )
 
@@ -81,14 +106,24 @@ export async function adminRoutes(app: FastifyInstance) {
           .returningAll()
           .executeTakeFirstOrThrow()
 
-        // Promote to referee and set their tier. Initial requests grant
-        // 'amateur'; upgrade requests grant the requested tier.
-        const grantedTier = application.requested_tier ?? 'amateur'
-        await trx
-          .updateTable('users')
-          .set({ role: 'referee', referee_tier: grantedTier })
-          .where('id', '=', application.user_id)
-          .execute()
+        if (application.request_type === 'organizer') {
+          // Organizers schedule; they never officiate. Deliberately leave
+          // referee_tier NULL so no scoring capability is implied.
+          await trx
+            .updateTable('users')
+            .set({ role: 'organizer' })
+            .where('id', '=', application.user_id)
+            .execute()
+        } else {
+          // Promote to referee and set their tier. Initial requests grant
+          // 'amateur'; upgrade requests grant the requested tier.
+          const grantedTier = application.requested_tier ?? 'amateur'
+          await trx
+            .updateTable('users')
+            .set({ role: 'referee', referee_tier: grantedTier })
+            .where('id', '=', application.user_id)
+            .execute()
+        }
 
         return { application: updated }
       })
