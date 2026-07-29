@@ -166,11 +166,48 @@ Head-to-head applies **only to two-way ties**. A three-or-more-way tie surviving
 
 A tournament day is 16 matches with ~90 seconds between whistles. The existing `RefereeScorecard` collects positions plus every schema metric — far too slow, and slow entry produces skipped or fabricated data, which is worse than less data.
 
-New `TournamentScorecard` collects exactly four things: **goals, assists, saves, clean sheet**. Both rosters side by side, large tap targets, running score derived from goals, one *End match* button that completes the match and advances the winner. Target: under 45 seconds per match.
+New `TournamentScorecard` collects exactly four things: **goals, assists, saves, clean sheet**. Both rosters side by side, large tap targets, running score derived from goals. A *Review* action then reveals the algorithm's star suggestions for referee approval (see §3.4.1), and *End match* completes the match and advances the winner. Target: under 45 seconds of stat entry, plus the review glance.
 
-Reuses the existing `POST /matches/:id/stats/batch` and `POST /matches/:id/complete` endpoints. Clean sheet is derived team-level, as the rating engine already does.
+Reuses the existing `POST /matches/:id/stats/batch`, `POST /matches/:id/rating-suggestions`, `POST /matches/:id/ratings` and `POST /matches/:id/complete` endpoints — all four already exist. Clean sheet is derived team-level, as the rating engine already does.
 
 Position is optional here. When absent, the engine's existing GK stat-inference fallback applies.
+
+#### 3.4.1 Referee rating override — per match, immediately after the whistle
+
+**Decision (2026-07-29): the referee reviews and overrides star ratings for a match right after that match, before ending it. Deferred or batched review is explicitly rejected.** Reviewing while the game is still fresh in the referee's mind is the point — an hour later they will not remember who was quietly excellent.
+
+The override already exists and works end to end; only the mobile UI was never built:
+
+| Piece | Where |
+|---|---|
+| `POST /matches/:id/rating-suggestions` | `scores.routes.ts:160` — stores the algorithm's `suggested_rating` per player |
+| `POST /matches/:id/ratings` | `scores.routes.ts:199` — accepts a referee value within **±4** of the suggestion |
+| `RATING_BOUND = 4` | `scores.routes.ts:22` |
+| `suggested_rating`, `rating_overridden` | `match_player_stats`, migration 007 |
+
+**No backend change is required, and `finalizeMatch()` is not touched.** The existing endpoint order already produces exactly this flow, because `POST /matches/:id/ratings` is only rejected once the match is `completed` — so review naturally belongs before completion:
+
+```
+1. POST /matches/:id/stats/batch        goals · assists · saves · clean sheet
+2. POST /matches/:id/rating-suggestions algorithm's 0–10 per player
+3. POST /matches/:id/ratings            referee's adjustments, each within ±4
+4. POST /matches/:id/complete           locks ratings, advances the bracket, enqueues Elo
+```
+
+This is the single most important reason match completion must stay the last step: it is what locks the ratings.
+
+**The UI must make four calls feel like one screen.** `TournamentScorecard` is a single view, not a wizard:
+
+- The referee taps in goals/assists/saves as the match runs.
+- On the final whistle they hit *Review* — the screen calls `stats/batch` then `rating-suggestions` and re-renders in place, each player's row now showing the suggested 0–10 with a compact `−`/`+` control and the permitted range.
+- Every value is pre-filled with the algorithm's suggestion, so **doing nothing is a valid, correct action.** The referee only touches the two or three players they disagree with.
+- *End match* then fires `ratings` followed by `complete` as one user action.
+
+So it is two taps plus any adjustments, not four steps.
+
+**Known risk — the time budget.** This is the one real cost of reviewing per match: 16 matches at ~90 seconds between whistles now includes a glance at ~12 star ratings. Mitigations are pre-filled suggestions (no input required to proceed), large tap targets, and out-of-range values being impossible to enter rather than rejected after the fact. If it proves too slow with a real referee at a real tournament, the lever to pull is reducing what §3.4 collects — not moving the review later.
+
+**Context on how much the override still carries:** it was introduced because keepers and defenders scored absurdly low. Position baselines, the GK baseline of 5 and the tiered clean-sheet bonuses have since fixed that at the source. So it now functions as a trust mechanism over a system-owned ladder rather than as a bug workaround — which is why pre-filled defaults that the referee usually accepts unchanged is the right interaction, and why the ±4 bound is enough to keep Elo honest.
 
 ### 3.5 Rating weight for short matches
 
@@ -293,6 +330,7 @@ The existing admin approve/reject endpoints extend to flip `role` to `organizer`
 - **Standings** — table maths and the full tie-break chain, including a two-way head-to-head tie and a three-way tie falling back to seed order.
 - **Isolation guarantee** — with unresolved fixtures present in an event, `GET /matches`, `GET /matches/:id` and the rating consumer behave exactly as before. This is the test that proves the `event_fixtures` choice paid off.
 - **Rating weight** — a null `duration_minutes` reproduces today's Elo deltas exactly (backwards-compatibility guard); a 12-minute match produces a delta at the floor weight.
+- **Override ordering** — the per-match review must happen before completion: a referee value within ±4 is accepted while the match is live, the same call returns 409 once the match is `completed`, an out-of-range value is rejected, and the Elo consumer uses the referee's saved star rather than the algorithm's suggestion.
 - **Guest claim** — claiming carries all rating history over; a second claim with the same token fails.
 - **End-to-end** — seed an 8-team event, register teams with guests, generate, score all 16 matches, assert standings, bracket, ratings and the public payload.
 
