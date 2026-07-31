@@ -230,4 +230,62 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
       roster: result.roster,
     })
   })
+
+  /**
+   * GET /events/:id/teams
+   *
+   * Every registered squad with its full roster. GET /events/:id returns the
+   * team rows but no players, so this is what lets an organizer confirm squads
+   * are complete before generating fixtures, and what a team-list screen renders.
+   */
+  app.get('/events/:id/teams', { preHandler: requireAuth }, async (request, reply) => {
+    const { id: eventId } = request.params as { id: string }
+    const db = getDb()
+
+    const event = await db
+      .selectFrom('events')
+      .select('id')
+      .where('id', '=', eventId)
+      .executeTakeFirst()
+
+    if (!event) return reply.code(404).send({ error: 'Event not found' })
+
+    const teams = await db
+      .selectFrom('event_teams as et')
+      .innerJoin('teams as t', 't.id', 'et.team_id')
+      .select(['et.team_id', 't.name', 't.avatar_url', 'et.seed', 'et.group_no', 'et.points'])
+      .where('et.event_id', '=', eventId)
+      .orderBy('et.seed', 'asc')
+      .orderBy('t.name', 'asc')
+      .execute()
+
+    if (teams.length === 0) {
+      return { event_id: eventId, count: 0, teams: [] }
+    }
+
+    // One query for every roster, then grouped in memory — avoids N+1.
+    const members = await db
+      .selectFrom('team_members as tm')
+      .innerJoin('users as u', 'u.id', 'tm.user_id')
+      .select(['tm.team_id', 'u.id as user_id', 'u.name', 'u.is_guest', 'tm.role'])
+      .where(
+        'tm.team_id',
+        'in',
+        teams.map((t) => t.team_id)
+      )
+      .execute()
+
+    const byTeam = new Map<string, Array<{ user_id: string; name: string; is_guest: boolean; role: string }>>()
+    for (const m of members) {
+      const list = byTeam.get(m.team_id) ?? []
+      list.push({ user_id: m.user_id, name: m.name, is_guest: m.is_guest, role: m.role })
+      byTeam.set(m.team_id, list)
+    }
+
+    return {
+      event_id: eventId,
+      count: teams.length,
+      teams: teams.map((t) => ({ ...t, players: byTeam.get(t.team_id) ?? [] })),
+    }
+  })
 }

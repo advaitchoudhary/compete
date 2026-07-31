@@ -358,4 +358,38 @@ describe('Team self-registration', () => {
     expect(third.statusCode).toBe(409)
     expect(third.json().error).toContain('full')
   })
+
+  it('GET /v1/events/:id/teams returns every squad with its roster', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/events/${openEventId}/teams`,
+      headers: { authorization: makeAuthHeader(ORGANIZER_ID, app) },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.count).toBe(2)
+
+    const strikers = body.teams.find((t: any) => t.name === 'Powai Strikers')
+    expect(strikers).toBeDefined()
+    expect(strikers.players).toHaveLength(5)
+    expect(strikers.players.filter((p: any) => p.is_guest)).toHaveLength(3)
+    expect(strikers.players.find((p: any) => p.role === 'captain').user_id).toBe(CAPTAIN_A_ID)
+  })
+
+  it('GET /v1/events/:id/teams requires authentication', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/events/${openEventId}/teams`,
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('GET /v1/events/:id/teams 404s for an unknown event', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/events/550e8400-e29b-41d4-a716-4466554403fd/teams',
+      headers: { authorization: makeAuthHeader(ORGANIZER_ID, app) },
+    })
+    expect(res.statusCode).toBe(404)
+  })
 })
