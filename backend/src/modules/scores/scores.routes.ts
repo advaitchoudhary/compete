@@ -8,6 +8,8 @@ import { enqueueRatingJob } from '../../shared/queue/ratings.stream'
 import { emitFeedEvent } from '../feed/feed.service'
 import { checkAchievements } from '../achievements/achievements.service'
 import { assertMatchReferee } from '../matches/match.access'
+import { applyStandings } from '../events/bracket/standings'
+import { resolveFixtures } from '../events/bracket/resolver'
 
 const SubmitStatsBody = z.object({
   user_id: z.string().uuid(),
@@ -369,6 +371,14 @@ async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<
   await enqueueRatingJob({
     match_id: match.id, sport_id: match.sport_id, triggered_at: new Date().toISOString(),
   })
+
+  // Tournament bookkeeping: fold the result into the group table, then advance
+  // any bracket slot this result just decided. Both are no-ops for a standalone
+  // match with no event_id.
+  if (match.event_id) {
+    await applyStandings(db, match.id)
+    await resolveFixtures(match.event_id)
+  }
 
   await updateTeamStats(db, { ...match, winner_team_id: winnerTeamId })
 
