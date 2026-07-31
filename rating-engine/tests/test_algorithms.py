@@ -21,6 +21,7 @@ import pytest
 from algorithms.base import (
     compute_star_rating,
     elo_delta,
+    match_weight,
     blend_overall,
     compute_form_rating,
     WIN_BONUS,
@@ -232,3 +233,52 @@ class TestPreprocessors:
     def test_unknown_sport_returns_unchanged(self):
         original = {"some_stat": 5}
         assert preprocess_stats("volleyball", original) == original
+
+
+class TestMatchWeight:
+    """
+    A short game carries less information, so it must move Elo less.
+    The backwards-compatibility guard is the important one here: every match
+    recorded before duration existed must keep its exact previous behaviour.
+    """
+
+    def test_a_full_match_has_full_weight(self):
+        assert match_weight(90) == 1.0
+
+    def test_missing_duration_is_treated_as_a_full_match(self):
+        # THE compatibility guard: existing rows have no duration.
+        assert match_weight(None) == 1.0
+
+    def test_a_long_match_does_not_exceed_full_weight(self):
+        assert match_weight(120) == 1.0
+
+    def test_a_short_match_is_floored_not_zeroed(self):
+        # 12/90 = 0.13, below the floor, so it clamps to 0.25 rather than making a
+        # tournament result count for almost nothing.
+        assert match_weight(12) == 0.25
+        assert match_weight(1) == 0.25
+
+    def test_a_mid_length_match_scales_linearly(self):
+        assert abs(match_weight(45) - 0.5) < 1e-9
+
+    def test_weight_is_monotonic(self):
+        weights = [match_weight(d) for d in (5, 20, 45, 60, 90)]
+        assert weights == sorted(weights)
+
+    def test_elo_delta_defaults_to_unweighted(self):
+        # No weight argument must reproduce the pre-Phase-4a delta exactly.
+        assert elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0) == elo_delta(
+            50.0, 50.0, 1.0, 10, 1.0, 5.0, 1.0
+        )
+
+    def test_a_short_match_moves_elo_less_than_a_full_one(self):
+        full = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(90))
+        short = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(12))
+        assert abs(short) < abs(full)
+        # Floor is 0.25, so the short game should be a quarter of the full one.
+        assert abs(short - full * 0.25) < 1e-9
+
+    def test_weighting_preserves_direction(self):
+        # A win must still gain and a loss must still drop, however short.
+        assert elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(12)) > 0
+        assert elo_delta(50.0, 50.0, 0.0, 10, 1.0, 5.0, match_weight(12)) < 0

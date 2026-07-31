@@ -33,6 +33,12 @@ import math
 # Elo+ model (v1) — per-tier Elo, blended overall, star rating, margin
 # ════════════════════════════════════════════════════════════════════
 
+# A 12-minute 5-a-side carries far less information than a 90-minute match, so it
+# must not move Elo as much. Applied to K — NOT to the tier blend, which is a
+# separate quantity and would double-count. See spec §3.5.
+REFERENCE_MINUTES = 90.0   # a full match
+MATCH_WEIGHT_FLOOR = 0.25  # a very short game still counts for something
+
 ELO_SCALE = 20.0          # sensitivity on the 0–100 rating range
 NUDGE = 0.6               # how much the star (individual) shifts the team result
 CONTRIB_SCALE = 1.5       # weighted-stat performance added ON TOP of the position baseline
@@ -85,6 +91,24 @@ def k_factor(matches_played: int) -> float:
     if matches_played < 40:
         return 16.0
     return 10.0
+
+
+def match_weight(duration_minutes: float | None) -> float:
+    """
+    How much a single result should count, from its duration.
+
+    A missing duration means the match predates the column, so it is treated as a
+    full 90 minutes — every rating computed before this existed stays identical.
+    """
+    if duration_minutes is None:
+        return 1.0
+    try:
+        minutes = float(duration_minutes)
+    except (TypeError, ValueError):
+        return 1.0
+    if minutes <= 0:
+        return MATCH_WEIGHT_FLOOR
+    return max(MATCH_WEIGHT_FLOOR, min(1.0, minutes / REFERENCE_MINUTES))
 
 
 def mov_multiplier(margin: float) -> float:
@@ -167,12 +191,14 @@ def elo_delta(
     matches_played: int,
     margin: float,
     star: float,          # 0–10
+    weight: float = 1.0,  # match weight (see match_weight); 1.0 = a full match
 ) -> float:
     """Tier-ladder Elo change. The star (which already carries the win bonus)
-    nudges the team result into the Elo delta."""
+    nudges the team result into the Elo delta, and `weight` scales K down for a
+    short game. Defaults to 1.0 so existing callers are unaffected."""
     expected = expected_score(rating, opponent_avg)
     effective = (actual - expected) + NUDGE * (star / 10.0 - 0.5)
-    return k_factor(matches_played) * mov_multiplier(margin) * effective
+    return k_factor(matches_played) * weight * mov_multiplier(margin) * effective
 
 
 def blend_overall(tier_rows: list[tuple[str, float, int]]) -> float:

@@ -22,6 +22,7 @@ from config import settings
 from algorithms.base import (
     compute_star_rating,
     elo_delta,
+    match_weight,
     blend_overall,
     compute_form_rating,
 )
@@ -105,13 +106,16 @@ def process_match(match_id: str, sport_id: str, db_conn, redis_client) -> None:
     stat_schema = sport["stat_schema"]
 
     cur.execute("""
-        SELECT home_team_id, away_team_id, winner_team_id, home_score, away_score, tier
+        SELECT home_team_id, away_team_id, winner_team_id, home_score, away_score, tier,
+               duration_minutes
         FROM matches WHERE id = %s
     """, (match_id,))
     match = cur.fetchone()
     if not match:
         return
     tier = match["tier"] or "amateur"
+    # Short tournament games carry less information — scale K accordingly.
+    weight = match_weight(match.get("duration_minutes"))
     margin = _score_margin(sport_slug, match["home_score"], match["away_score"])
 
     cur.execute("""
@@ -163,7 +167,7 @@ def process_match(match_id: str, sport_id: str, db_conn, redis_client) -> None:
         star = float(row["match_rating"]) if row["match_rating"] is not None \
             else compute_star_rating(processed, stat_schema, row["position"], won, clean)
 
-        delta = elo_delta(rating, opponent_avg, actual, matches_played, margin, star)
+        delta = elo_delta(rating, opponent_avg, actual, matches_played, margin, star, weight)
         new_tier_rating = round(max(1.0, min(99.0, rating + delta)), 2)
 
         # Upsert this tier ladder
