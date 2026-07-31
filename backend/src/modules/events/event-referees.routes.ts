@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
+import { TIER_RANK } from '../../shared/tiers'
+import { floorTier } from './event-tier'
 
 const SetRefereesBody = z.object({
   referees: z
@@ -44,7 +46,7 @@ export async function eventRefereesRoutes(app: FastifyInstance) {
 
       const event = await db
         .selectFrom('events')
-        .select(['id', 'organizer_id'])
+        .select(['id', 'organizer_id', 'tier'])
         .where('id', '=', id)
         .executeTakeFirst()
 
@@ -55,19 +57,29 @@ export async function eventRefereesRoutes(app: FastifyInstance) {
 
       // Every nominee must actually hold the referee role. An organizer cannot
       // smuggle a friend (or themselves) into a scoring position.
-      const valid = await db
+      const nominees = await db
         .selectFrom('users')
-        .select('id')
+        .select(['id', 'role', 'referee_tier'])
         .where('id', 'in', ids)
         .where('role', 'in', ['referee', 'admin'])
         .where('is_active', '=', true)
         .execute()
 
-      const validIds = new Set(valid.map((u) => u.id))
+      const validIds = new Set(nominees.map((u) => u.id))
       const invalid = ids.filter((uid) => !validIds.has(uid))
       if (invalid.length > 0) {
         return reply.code(400).send({
           error: `not an approved referee: ${invalid.join(', ')}`,
+        })
+      }
+
+      // Closing the loophole: an organizer could set 'pro' with pro referees and
+      // then swap them for amateurs. Simulate the resulting roster and refuse if
+      // it would no longer support the event's current tier. See spec §3.1.1.
+      const wouldBeFloor = floorTier(nominees)
+      if (TIER_RANK[wouldBeFloor] < TIER_RANK[event.tier]) {
+        return reply.code(409).send({
+          error: `This roster only supports '${wouldBeFloor}' but the event is '${event.tier}' — lower the event tier first, or assign referees at '${event.tier}' or above`,
         })
       }
 
