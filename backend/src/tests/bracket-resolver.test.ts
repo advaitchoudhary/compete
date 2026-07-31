@@ -25,7 +25,7 @@ vi.mock('../modules/auth/auth.service', () => ({
 import { getDb } from '../shared/db/client'
 import { generateFixtures } from '../modules/events/bracket/generator'
 import { resolveFixtures } from '../modules/events/bracket/resolver'
-import { applyStandings, rankStandings } from '../modules/events/bracket/standings'
+import { recomputeStandings, rankStandings } from '../modules/events/bracket/standings'
 
 const ORGANIZER_ID = '550e8400-e29b-41d4-a716-4466554406f1'
 const REF_ID = '550e8400-e29b-41d4-a716-4466554406f2'
@@ -108,7 +108,7 @@ async function completeMatch(matchId: string, homeGoals: number, awayGoals: numb
     .where('id', '=', matchId)
     .execute()
 
-  await applyStandings(db, matchId)
+  await recomputeStandings(eventId)
   await resolveFixtures(eventId)
 }
 
@@ -330,6 +330,33 @@ describe('Standings and bracket progression', () => {
     expect(finalAgain.home_team_id).not.toBeNull()
     expect(finalAgain.away_team_id).not.toBeNull()
     expect(finalAgain.match_id).not.toBeNull()
+  })
+
+  it('recomputing standings repeatedly is idempotent', async () => {
+    // Why this matters: finalizeMatch is NOT transactional, so if it died between
+    // marking a match completed and updating the table, an incrementing
+    // implementation would be permanently wrong AND the 409 "already completed"
+    // guard would block any retry. A full recompute converges instead.
+    const db = getDb()
+    const before = await db
+      .selectFrom('event_teams')
+      .select(['team_id', 'points', 'played', 'goals_for', 'goals_against'])
+      .where('event_id', '=', eventId)
+      .orderBy('team_id', 'asc')
+      .execute()
+
+    await recomputeStandings(eventId)
+    await recomputeStandings(eventId)
+    await recomputeStandings(eventId)
+
+    const after = await db
+      .selectFrom('event_teams')
+      .select(['team_id', 'points', 'played', 'goals_for', 'goals_against'])
+      .where('event_id', '=', eventId)
+      .orderBy('team_id', 'asc')
+      .execute()
+
+    expect(after).toEqual(before)
   })
 
   it('re-resolving is idempotent — no double advance, no second match', async () => {

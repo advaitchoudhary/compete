@@ -8,7 +8,7 @@ import { enqueueRatingJob } from '../../shared/queue/ratings.stream'
 import { emitFeedEvent } from '../feed/feed.service'
 import { checkAchievements } from '../achievements/achievements.service'
 import { assertMatchReferee } from '../matches/match.access'
-import { applyStandings } from '../events/bracket/standings'
+import { recomputeStandings } from '../events/bracket/standings'
 import { resolveFixtures } from '../events/bracket/resolver'
 
 const SubmitStatsBody = z.object({
@@ -372,11 +372,13 @@ async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<
     match_id: match.id, sport_id: match.sport_id, triggered_at: new Date().toISOString(),
   })
 
-  // Tournament bookkeeping: fold the result into the group table, then advance
-  // any bracket slot this result just decided. Both are no-ops for a standalone
-  // match with no event_id.
+  // Tournament bookkeeping: rebuild the group table, then advance any bracket
+  // slot this result just decided. Both are no-ops for a standalone match with no
+  // event_id. The standings rebuild is a full recompute rather than an increment,
+  // so it is idempotent and self-heals if a previous completion was interrupted —
+  // finalizeMatch is not transactional, so that matters.
   if (match.event_id) {
-    await applyStandings(db, match.id)
+    await recomputeStandings(match.event_id)
     await resolveFixtures(match.event_id)
   }
 

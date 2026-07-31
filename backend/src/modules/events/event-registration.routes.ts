@@ -209,8 +209,20 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
       }
 
       await trx
+      // Seed by registration order. Without this the seed stays NULL, and the
+      // bracket generator's `ORDER BY seed, team_id` silently falls back to UUID
+      // order — which would quietly defeat snake group distribution, byes going
+      // to the strongest teams, and the seed-order tie-break. Computed inside the
+      // transaction so two simultaneous registrations can't claim the same seed.
+      const { registered } = await trx
+        .selectFrom('event_teams')
+        .select((eb) => eb.fn.countAll<string>().as('registered'))
+        .where('event_id', '=', eventId)
+        .executeTakeFirstOrThrow()
+
+      await trx
         .insertInto('event_teams')
-        .values({ event_id: eventId, team_id: team.id })
+        .values({ event_id: eventId, team_id: team.id, seed: Number(registered) + 1 })
         .execute()
 
       const roster = await trx

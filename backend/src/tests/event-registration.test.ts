@@ -376,6 +376,28 @@ describe('Team self-registration', () => {
     expect(strikers.players.find((p: any) => p.role === 'captain').user_id).toBe(CAPTAIN_A_ID)
   })
 
+  it('assigns a seed by registration order', async () => {
+    // Regression: registration used to leave seed NULL, so the bracket generator
+    // fell back to UUID order — quietly defeating snake group distribution, byes
+    // for the strongest seeds, and the seed-order tie-break. Every earlier test
+    // set seeds by hand, which is why none of them caught it.
+    const rows = await getDb()
+      .selectFrom('event_teams as et')
+      .innerJoin('teams as t', 't.id', 'et.team_id')
+      .select(['t.name', 'et.seed'])
+      .where('et.event_id', '=', openEventId)
+      .orderBy('et.seed', 'asc')
+      .execute()
+
+    expect(rows).toHaveLength(2)
+    for (const r of rows) {
+      expect(r.seed).not.toBeNull()
+    }
+    // First registered gets seed 1, second gets seed 2 — contiguous from one.
+    expect(rows.map((r) => Number(r.seed))).toEqual([1, 2])
+    expect(rows[0].name).toBe('Powai Strikers')
+  })
+
   it('GET /v1/events/:id/teams requires authentication', async () => {
     const res = await app.inject({
       method: 'GET',

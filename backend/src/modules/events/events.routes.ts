@@ -208,11 +208,21 @@ export async function eventsRoutes(app: FastifyInstance) {
       }
     }
 
+    // Seed by registration order, matching POST /events/:id/register. A NULL seed
+    // makes the bracket generator fall back to UUID order, silently defeating
+    // snake group distribution, byes for strong seeds, and the seed tie-break.
+    const { registered } = await db
+      .selectFrom('event_teams')
+      .select((eb) => eb.fn.countAll<string>().as('registered'))
+      .where('event_id', '=', eventId)
+      .executeTakeFirstOrThrow()
+
     await db
       .insertInto('event_teams')
       .values({
         event_id: eventId,
         team_id: body.data.team_id,
+        seed: Number(registered) + 1,
         group_no: body.data.group_no ?? null,
       })
       .onConflict((oc) => oc.doNothing())
