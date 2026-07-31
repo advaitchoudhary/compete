@@ -13,6 +13,7 @@ import { eventsRoutes } from './modules/events/events.routes'
 import { eventRefereesRoutes } from './modules/events/event-referees.routes'
 import { eventTierRoutes } from './modules/events/event-tier.routes'
 import { eventRegistrationRoutes } from './modules/events/event-registration.routes'
+import { eventFixturesRoutes } from './modules/events/event-fixtures.routes'
 import { matchesRoutes } from './modules/matches/matches.routes'
 import { scoresRoutes } from './modules/scores/scores.routes'
 import { achievementsRoutes } from './modules/achievements/achievements.routes'
@@ -60,6 +61,7 @@ async function build() {
   await app.register(eventRefereesRoutes, { prefix: V1_PREFIX })
   await app.register(eventTierRoutes, { prefix: V1_PREFIX })
   await app.register(eventRegistrationRoutes, { prefix: V1_PREFIX })
+  await app.register(eventFixturesRoutes, { prefix: V1_PREFIX })
   await app.register(matchesRoutes, { prefix: V1_PREFIX })
   await app.register(scoresRoutes, { prefix: V1_PREFIX })
   await app.register(achievementsRoutes, { prefix: V1_PREFIX })
