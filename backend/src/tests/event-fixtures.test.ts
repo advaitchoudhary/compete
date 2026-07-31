@@ -408,4 +408,55 @@ describe('Fixture generation', () => {
     expect(res.statusCode).toBe(409)
     expect(res.json().error).toMatch(/already started|kicked off/i)
   })
+
+  it('GET returns the bracket with placeholders for unresolved sides', async () => {
+    await makeEvent({ teamCount: 8 })
+    await app.inject({
+      method: 'POST',
+      url: `/v1/events/${eventId}/fixtures`,
+      headers: { authorization: makeAuthHeader(ORGANIZER_ID, app) },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/events/${eventId}/fixtures`,
+      headers: { authorization: makeAuthHeader(ORGANIZER_ID, app) },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+
+    expect(body.fixtures).toHaveLength(15)
+    expect(body.tier).toBe('amateur')
+
+    const group = body.fixtures.filter((f: any) => f.round.startsWith('group_'))
+    expect(group).toHaveLength(12)
+    for (const f of group) {
+      expect(f.home_label).toBeTruthy()
+      expect(f.away_label).toBeTruthy()
+      expect(f.match_id).not.toBeNull()
+      expect(f.pitch_label).toBeTruthy()
+    }
+
+    const semis = body.fixtures.filter((f: any) => f.round === 'semi')
+    expect(semis).toHaveLength(2)
+    for (const s of semis) {
+      expect(s.match_id).toBeNull()
+      expect(s.home_label).toMatch(/qualifier/i)
+    }
+
+    const final = body.fixtures.find((f: any) => f.round === 'final')
+    expect(final.home_label).toMatch(/winner of/i)
+
+    // Two groups, each with a four-row table.
+    expect(body.standings).toHaveLength(2)
+    for (const s of body.standings) {
+      expect(s.table).toHaveLength(4)
+    }
+  })
+
+  it('GET requires authentication', async () => {
+    await makeEvent({ teamCount: 8 })
+    const res = await app.inject({ method: 'GET', url: `/v1/events/${eventId}/fixtures` })
+    expect(res.statusCode).toBe(401)
+  })
 })
