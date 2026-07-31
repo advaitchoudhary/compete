@@ -12,6 +12,7 @@ const CreateEventBody = z.object({
   // no referees yet, so nothing above 'amateur' could be authorised. Set it
   // afterwards via PATCH /events/:id/tier. See spec §3.1.1.
   match_format: z.enum(['5-a-side', '7-a-side', '11-a-side']).optional(),
+  match_duration_minutes: z.number().int().min(1).max(180).optional(),
   city: z.string().min(2).max(50),
   venue: z.string().max(100).optional(),
   description: z.string().max(500).optional(),
@@ -52,6 +53,7 @@ export async function eventsRoutes(app: FastifyInstance) {
         organizer_id: request.userId,
         format: body.data.format,
         match_format: body.data.match_format ?? null,
+        match_duration_minutes: body.data.match_duration_minutes ?? null,
         city: body.data.city,
         venue: body.data.venue ?? null,
         description: body.data.description ?? null,

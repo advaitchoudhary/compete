@@ -55,6 +55,12 @@ export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
 export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
 export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'
 
+/** How one side of a fixture gets filled in. Stored as jsonb. */
+export type FixtureSource =
+  | { type: 'team'; team_id: string }
+  | { type: 'winner_of'; fixture_id: string }
+  | { type: 'qualifier'; seed: number }
+
 export interface UserTable {
   id: Generated<string>
   phone: string | null
@@ -159,6 +165,8 @@ export interface EventTable {
   tier: Generated<MatchTier>
   // Players per side — distinct from `format`, which is the tournament structure.
   match_format: MatchFormat | null
+  // Slot length for the generator; also Phase 4's rating match-weight input.
+  match_duration_minutes: number | null
   city: string
   venue: string | null
   description: string | null
@@ -180,7 +188,30 @@ export interface EventTeamTable {
   seed: number | null
   group_no: string | null
   points: Generated<number>
+  played: Generated<number>
+  won: Generated<number>
+  drawn: Generated<number>
+  lost: Generated<number>
+  goals_for: Generated<number>
+  goals_against: Generated<number>
   registered_at: Generated<Date>
+}
+
+export interface EventFixtureTable {
+  id: Generated<string>
+  event_id: string
+  round: string
+  slot_no: number
+  pitch_label: string | null
+  scheduled_at: Date | null
+  referee_id: string | null
+  home_source: JsonbColumn<FixtureSource>
+  away_source: JsonbColumn<FixtureSource>
+  home_team_id: string | null
+  away_team_id: string | null
+  match_id: string | null
+  created_at: Generated<Date>
+  updated_at: Generated<Date>
 }
 
 export interface EventRefereeTable {
@@ -287,6 +318,7 @@ export interface Database {
   events: EventTable
   event_teams: EventTeamTable
   event_referees: EventRefereeTable
+  event_fixtures: EventFixtureTable
   matches: MatchTable
   match_player_stats: MatchPlayerStatsTable
   rating_history: RatingHistoryTable
