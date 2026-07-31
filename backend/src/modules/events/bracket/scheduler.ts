@@ -56,6 +56,11 @@ export function scheduleFixtures(input: ScheduleInput): ScheduledFixture[] {
     let d = 0
     for (const side of [f.home, f.away]) {
       if (side.type === 'winner_of') d = Math.max(d, depthOf(side.ref) + 1)
+      // A qualifier depends on the ENTIRE group stage, not on one fixture, so it
+      // carries no winner_of edge. Without this it would land at depth 0 and be
+      // schedulable alongside the group matches that decide it — which is exactly
+      // what happened live: semis appeared before the last group game.
+      if (side.type === 'qualifier') d = Math.max(d, 1)
     }
     depthCache.set(key, d)
     return d

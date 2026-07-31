@@ -122,6 +122,32 @@ describe('scheduleFixtures', () => {
     expect(firstKo).toBeGreaterThan(lastGroup)
   })
 
+  it('no knockout fixture starts before the group stage ends, on any shape', () => {
+    // Regression: a `qualifier` source carries no winner_of edge, so it used to
+    // land at dependency depth 0 and get scheduled among the group matches that
+    // decide it. The 8-team/2-pitch case passed by luck because the groups packed
+    // contiguously; one pitch leaves rest-rule gaps for a semi to slip into.
+    for (const n of [8, 9, 12, 16]) {
+      for (const pitches of [['Only Pitch'], ['Pitch 1', 'Pitch 2'], ['A', 'B', 'C']]) {
+        const plan = planBracket(ids(n), 'group_knockout')
+        if (plan.fell_back) continue
+        const scheduled = scheduleFixtures({
+          fixtures: plan.fixtures,
+          pitches,
+          startsAt: START,
+          slotMinutes: 12,
+        })
+        const lastGroup = Math.max(
+          ...scheduled.filter((f) => f.round.startsWith('group_')).map((f) => f.slot_index)
+        )
+        const firstKo = Math.min(
+          ...scheduled.filter((f) => !f.round.startsWith('group_')).map((f) => f.slot_index)
+        )
+        expect(firstKo, `n=${n} pitches=${pitches.length}`).toBeGreaterThan(lastGroup)
+      }
+    }
+  })
+
   it('works with a single pitch', () => {
     const plan = planBracket(ids(8), 'group_knockout')
     const scheduled = scheduleFixtures({
