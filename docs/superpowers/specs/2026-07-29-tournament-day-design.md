@@ -127,16 +127,56 @@ Registration is allowed only while `events.status = 'registration'` and while `c
 
 `POST /v1/events/:id/fixtures` — organizer-only, idempotent-guarded (refuses if fixtures already exist), runs in one transaction.
 
-**Supported formats:** `knockout` and `group_knockout` only. `league`/`round_robin` remain in the DB constraint but are rejected by this endpoint in Phase 1.
+**Supported formats:** `knockout` and `group_knockout`. `league`/`round_robin` remain in the DB constraint but are rejected by this endpoint.
 
-**Supported team counts:** exactly **8, 12 or 16**. Any other count is rejected with a clear error. This keeps group sizes equal and the bracket balanced without special-casing byes in Phase 1.
+**Team counts (decided 2026-07-31): no count is ever turned away.** A real turf tournament gets whatever turns up — nine teams, or five. An earlier draft restricted this to 8/12/16, which was a convenience, not a requirement.
 
-**Generation for 8 teams, `group_knockout`:**
-- 2 groups of 4, seeded by `event_teams.seed` (random when absent), snake-distributed across groups
-- Round-robin within each group: 6 matches per group = 12
-- Semi-finals (2), final (1), third-place (1) = 16 matches total
-- Time slots assigned round-robin across pitches. **Rest gap rule: a team must have at least one full slot free between its own matches.** Generation fails loudly rather than emitting a schedule that violates this.
-- Each fixture stamped with `referee_id` from `event_referees` for its pitch, plus `round`, `slot_no`, `pitch_label` and `scheduled_at`
+**`knockout` works for any N ≥ 2** via a play-in round, with byes to the top seeds:
+
+```
+P = largest power of two ≤ N
+play-in matches = N − P
+byes            = N − 2(N − P)
+```
+
+| N | Shape | Total matches |
+|---|---|---|
+| 5 | 1 play-in, 3 byes → semis → final | 4 |
+| 6 | 2 play-ins, 2 byes → semis → final | 5 |
+| 9 | 1 play-in, 7 byes → quarters → semis → final | 8 |
+
+**`group_knockout` requires EQUAL group sizes.** Groups of unequal size have played a different number of matches, so their points are not comparable — and filling a bracket needs a "best runner-up" comparison across groups. Real tournaments patch this with points-per-game or by discarding results against the bottom team; both are arbitrary and neither is explainable to a team that goes out on it. Requiring equal groups makes the comparison genuinely fair, so this constraint is a fairness property rather than a simplification.
+
+Group count targets groups of 4, falling back to 3: `G = ceil(N / 4)`, accepted only if `N % G == 0`.
+
+| N | Groups | Qualify | Total matches |
+|---|---|---|---|
+| 6 | 2 × 3 | top 2 → semis | 6 + 3 = 9 |
+| 8 | 2 × 4 | top 2 → semis | 12 + 3 = 15 |
+| 9 | 3 × 3 | 3 winners + best runner-up → semis | 9 + 3 = 12 |
+| 12 | 3 × 4 | 3 winners + best runner-up → semis | 18 + 3 = 21 |
+| 16 | 4 × 4 | top 2 → quarters | 24 + 7 = 31 |
+
+Qualifier count is the largest power of two that is ≤ `2 × G` and ≤ `N`, minimum 2.
+
+**When N cannot form equal groups** (a prime count such as 5, 7, 11, 13) the endpoint does **not** fail — it generates a `knockout` instead and says so in the response, so the organizer understands why their bracket looks different.
+
+**Seeding:** by `event_teams.seed` where set, otherwise random, snake-distributed across groups so seeds spread rather than cluster.
+
+**No third-place match** (decided 2026-07-31): losing semi-finalists go home. One less match and a shorter day.
+
+**Points:** 3 for a win, 1 for a draw, 0 for a loss. Group matches may be drawn. **Knockout matches must be decisive** — the referee records the penalty result as the final score; there is no shootout modelling.
+
+**Scheduling inputs** (decided 2026-07-31), so the generator can assign `scheduled_at`:
+- **Pitch count** = the number of distinct `pitch_label` values on `event_referees`. Derived rather than stored, so it can never disagree with the referees actually assigned.
+- **Slot length** = new `events.match_duration_minutes` column, which Phase 4 also needs for rating match-weight.
+- **Kickoff** = the existing `events.starts_at`.
+
+Slots are assigned round-robin across pitches. **Rest gap rule: a team must have at least one full slot free between its own matches.** Generation fails loudly rather than emitting a schedule that violates it.
+
+Each fixture is stamped with `referee_id` from `event_referees` for its pitch, plus `round`, `slot_no`, `pitch_label` and `scheduled_at`.
+
+**Regeneration** (decided 2026-07-31): permitted while **every** match for the event is still `scheduled` — it deletes those matches and all fixtures, then rebuilds. Once any match has started or completed, generation is final. This resolves a contradiction in an earlier draft, which promised re-seeding "by deleting fixtures with a NULL `match_id`" while also creating `matches` rows for every group fixture immediately, leaving nothing deletable. Teams withdrawing an hour before kickoff is normal at these events, so a recovery path is required.
 
 **Progression — the `event_fixtures` model.**
 
@@ -312,12 +352,13 @@ Guests are excluded from all push (no app, no token) — they receive the WhatsA
 | 009 | 1 ✅ | `009_organizer_role.sql` | `users.role` += `organizer`; `referee_applications.request_type` += `organizer` |
 | 010 | 1 ✅ | `010_event_referees.sql` | `event_referees` table |
 | 011 | 2 | `011_event_tier_and_format.sql` | `events` += `tier` (NOT NULL DEFAULT `'amateur'`, see §3.1.1), `match_format` |
-| 012 | 3 | `012_event_standings.sql` | `event_teams` += `played, won, drawn, lost, goals_for, goals_against` |
-| 013 | 3 | `013_event_fixtures.sql` | `event_fixtures` table (bracket structure + source resolution + `match_id` link) |
-| 014 | 4 | `014_match_duration.sql` | `matches` += `format`, `duration_minutes` |
-| 015 | 7 | `015_push_notifications.sql` | `push_tokens`, `notifications` tables |
+| 012 | 3 | `012_event_match_duration.sql` | `events` += `match_duration_minutes` (slot length; Phase 4 needs it too) |
+| 013 | 3 | `013_event_standings.sql` | `event_teams` += `played, won, drawn, lost, goals_for, goals_against` |
+| 014 | 3 | `014_event_fixtures.sql` | `event_fixtures` table (bracket structure + source resolution + `match_id` link) |
+| 015 | 4 | `015_match_duration.sql` | `matches` += `format`, `duration_minutes` |
+| 016 | 7 | `016_push_notifications.sql` | `push_tokens`, `notifications` tables |
 
-**No migration alters `matches` team columns.** The only change to `matches` is migration 014, which adds two nullable columns — additive and safe. This is a deliberate revision: an earlier draft made `home_team_id`/`away_team_id` nullable and was rejected once the blast radius was measured (see §3.3).
+**No migration alters `matches` team columns.** The only change to `matches` is migration 015, which adds two nullable columns — additive and safe. This is a deliberate revision: an earlier draft made `home_team_id`/`away_team_id` nullable and was rejected once the blast radius was measured (see §3.3).
 
 **Numbering note:** an earlier draft assigned `011` to standings. `011` is now the Phase 2 events migration, and everything after it shifted by one. `match_format` and `duration_minutes` become real columns rather than living inside the `events.rules` JSON blob as originally sketched — validated, typed and queryable.
 
