@@ -224,6 +224,8 @@ export async function generateFixtures(eventId: string): Promise<GenerateResult>
           scheduled_at: f.scheduled_at,
           status: 'scheduled',
           tier: eventTier,
+          format: event.match_format,
+          duration_minutes: event.match_duration_minutes,
           referee_id: refereeByPitch.get(f.pitch_label) ?? null,
         })
         .returning('id')

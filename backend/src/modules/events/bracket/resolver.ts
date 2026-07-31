@@ -22,7 +22,7 @@ export async function resolveFixtures(eventId: string): Promise<{ advanced: numb
 
   const event = await db
     .selectFrom('events')
-    .select(['id', 'sport_id', 'tier', 'venue'])
+    .select(['id', 'sport_id', 'tier', 'venue', 'match_format', 'match_duration_minutes'])
     .where('id', '=', eventId)
     .executeTakeFirst()
   if (!event) return { advanced: 0 }
@@ -149,6 +149,8 @@ export async function resolveFixtures(eventId: string): Promise<{ advanced: numb
           scheduled_at: f.scheduled_at,
           status: 'scheduled',
           tier: event.tier as MatchTier,
+          format: event.match_format,
+          duration_minutes: event.match_duration_minutes,
           referee_id: f.referee_id,
         })
         .returning('id')

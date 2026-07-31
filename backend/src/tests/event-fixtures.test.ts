@@ -255,13 +255,16 @@ describe('Fixture generation', () => {
 
     const matches = await db
       .selectFrom('matches')
-      .select(['tier', 'status'])
+      .select(['tier', 'status', 'format', 'duration_minutes'])
       .where('event_id', '=', eventId)
       .execute()
     expect(matches).toHaveLength(12)
     for (const m of matches) {
       expect(m.tier).toBe('amateur')
       expect(m.status).toBe('scheduled')
+      // Inherited from the event so the rating engine can weight a short game.
+      expect(m.format).toBe('5-a-side')
+      expect(m.duration_minutes).toBe(12)
     }
   })
 

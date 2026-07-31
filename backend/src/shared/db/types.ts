@@ -235,6 +235,9 @@ export interface MatchTable {
   completed_at: Date | null
   status: MatchStatus
   tier: Generated<MatchTier>
+  // Copied from the parent event at creation; drives the rating match-weight.
+  format: MatchFormat | null
+  duration_minutes: number | null
   referee_id: string | null
   home_score: JsonbColumn<Record<string, unknown>> | null
   away_score: JsonbColumn<Record<string, unknown>> | null
