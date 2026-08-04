@@ -50,7 +50,14 @@ export interface SportStatSchema {
   event_types?: string[]
 }
 
-export type UserRole = 'player' | 'referee' | 'organizer' | 'admin'
+/**
+ * The single source of truth for roles, as a runtime array so validators can be
+ * built from it. Adding `organizer` in Phase 1 updated the DB constraint and the
+ * type but missed a hand-written `z.enum([...])` in the dev-token route, which
+ * then refused to mint an organizer. Derive from this instead of retyping it.
+ */
+export const USER_ROLES = ['player', 'referee', 'organizer', 'admin'] as const
+export type UserRole = (typeof USER_ROLES)[number]
 export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
 export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
 export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'

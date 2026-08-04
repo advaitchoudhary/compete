@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { verifyFirebaseToken, issueJwt } from './auth.service'
 import { getDb } from '../../shared/db/client'
+import { USER_ROLES } from '../../shared/db/types'
+import { MATCH_TIERS } from '../../shared/tiers'
 
 const VerifyBody = z.object({
   firebase_id_token: z.string().min(1),
@@ -12,10 +14,12 @@ const VerifyBody = z.object({
 const DevTokenBody = z.object({
   key: z.string().min(1).max(40).optional(),
   name: z.string().min(1).max(80).optional(),
-  role: z.enum(['player', 'referee', 'admin']).optional(),
+  // Built from the shared constants so a new role or tier can never be accepted
+  // by the database and rejected here.
+  role: z.enum(USER_ROLES).optional(),
   city: z.string().max(50).optional(),
   // Dev convenience: mint a referee at a given tier (defaults to 'amateur')
-  referee_tier: z.enum(['amateur', 'semi_pro', 'pro', 'legends']).optional(),
+  referee_tier: z.enum(MATCH_TIERS).optional(),
 })
 
 export async function authRoutes(app: FastifyInstance) {

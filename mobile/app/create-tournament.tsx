@@ -10,18 +10,29 @@ import { useMutation } from '@tanstack/react-query'
 import { api } from '../src/api/client'
 import { C, SPORT } from '../src/theme'
 
+// Football leads and is the default: it is the only sport with the full
+// tournament-day pipeline behind it (players-per-side, goals/assists/saves,
+// fixture generation). The others create an event shell only.
 const SPORTS_LIST = [
-  { slug: 'cricket',    name: 'Cricket',    emoji: '🏏' },
   { slug: 'football',   name: 'Football',   emoji: '⚽' },
+  { slug: 'cricket',    name: 'Cricket',    emoji: '🏏' },
   { slug: 'badminton',  name: 'Badminton',  emoji: '🏸' },
   { slug: 'basketball', name: 'Basketball', emoji: '🏀' },
 ]
 
+// Only the two structures the fixture generator can actually build. 'league' and
+// 'casual' remain valid in the DB but POST /events/:id/fixtures rejects them, so
+// offering them here would produce a tournament that can never be scheduled.
 const FORMATS = [
-  { value: 'knockout',  label: 'Knockout' },
-  { value: 'league',    label: 'League'   },
-  { value: 'casual',    label: 'Casual'   },
+  { value: 'knockout',        label: 'Knockout' },
+  { value: 'group_knockout',  label: 'Groups + Knockout' },
 ]
+
+/** Players per side. Drives the squad minimum at registration. */
+const MATCH_FORMATS = ['5-a-side', '7-a-side', '11-a-side'] as const
+
+/** Slot length. Also weights the rating — a 12-minute game moves Elo less. */
+const DURATIONS = [10, 12, 15, 20, 30, 45]
 
 const MAX_TEAMS_OPTIONS = [4, 8, 16, 32]
 
@@ -30,7 +41,9 @@ export default function CreateTournamentScreen() {
 
   const [sport, setSport] = useState(SPORTS_LIST[0])
   const [name, setName] = useState('')
-  const [format, setFormat] = useState('knockout')
+  const [format, setFormat] = useState('group_knockout')
+  const [matchFormat, setMatchFormat] = useState<(typeof MATCH_FORMATS)[number]>('5-a-side')
+  const [duration, setDuration] = useState(12)
   const [city, setCity] = useState('')
   const [venue, setVenue] = useState('')
   const [maxTeams, setMaxTeams] = useState(8)
@@ -47,6 +60,12 @@ export default function CreateTournamentScreen() {
         format,
         city:       city.trim(),
         max_teams:  maxTeams,
+        // Both are needed before fixtures can be generated: match_format sets the
+        // squad minimum at registration, duration sets the slot length and weights
+        // the rating. Tier is deliberately NOT sent — it is not settable at
+        // creation and is raised later, capped by the assigned referees.
+        match_format: matchFormat,
+        match_duration_minutes: duration,
       }
       if (venue.trim()) body.venue = venue.trim()
       if (startsAt.trim()) {
@@ -123,7 +142,7 @@ export default function CreateTournamentScreen() {
             <Text style={s.inputIcon}>🏆</Text>
             <TextInput
               style={s.input}
-              placeholder="e.g. Summer Cricket League 2026"
+              placeholder={`e.g. Sunday ${sport.name} Cup 2026`}
               placeholderTextColor={C.t3}
               value={name}
               onChangeText={setName}
@@ -145,6 +164,42 @@ export default function CreateTournamentScreen() {
                   activeOpacity={0.75}
                 >
                   <Text style={[s.formatLabel, active && { color: C.limeText }]}>{f.label}</Text>
+                </TouchableOpacity>
+              )
+            })}
+          </View>
+
+          {/* Players per side */}
+          <Text style={s.sectionLabel}>PLAYERS PER SIDE</Text>
+          <View style={s.formatRow}>
+            {MATCH_FORMATS.map(mf => {
+              const active = matchFormat === mf
+              return (
+                <TouchableOpacity
+                  key={mf}
+                  style={[s.formatPill, active && { backgroundColor: C.lime, borderColor: C.lime }]}
+                  onPress={() => setMatchFormat(mf)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[s.formatLabel, active && { color: C.limeText }]}>{mf}</Text>
+                </TouchableOpacity>
+              )
+            })}
+          </View>
+
+          {/* Match length */}
+          <Text style={s.sectionLabel}>MATCH LENGTH</Text>
+          <View style={s.formatRow}>
+            {DURATIONS.map(d => {
+              const active = duration === d
+              return (
+                <TouchableOpacity
+                  key={d}
+                  style={[s.formatPill, active && { backgroundColor: C.lime, borderColor: C.lime }]}
+                  onPress={() => setDuration(d)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[s.formatLabel, active && { color: C.limeText }]}>{d}m</Text>
                 </TouchableOpacity>
               )
             })}

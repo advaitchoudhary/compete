@@ -12,9 +12,10 @@ import { notify } from '../src/lib/dialog'
 
 // Dev quick-login presets → /auth/dev-token bodies
 const ROLES = [
-  { key: 'p05',    role: undefined,   label: 'Player',  who: 'Devansh · rated',  accent: C.lime,  emoji: '⚽' },
-  { key: 'ref',    role: 'referee',   label: 'Referee', who: 'Vikram · officiator', accent: C.blue, emoji: '🦓' },
-  { key: 'ranjit', role: 'admin',     label: 'Admin',   who: 'Ranjit · you',     accent: C.gold,  emoji: '🛡️' },
+  { key: 'p05',    role: undefined,     label: 'Player',    who: 'Devansh · rated',        accent: C.lime,   emoji: '⚽' },
+  { key: 'org',    role: 'organizer',   label: 'Organizer', who: 'Rohan · runs tournaments', accent: C.orange, emoji: '🏟️' },
+  { key: 'ref',    role: 'referee',     label: 'Referee',   who: 'Vikram · officiator',    accent: C.blue,   emoji: '🦓' },
+  { key: 'ranjit', role: 'admin',       label: 'Admin',     who: 'Ranjit · you',           accent: C.gold,   emoji: '🛡️' },
 ] as const
 
 export default function AuthScreen() {
@@ -26,7 +27,12 @@ export default function AuthScreen() {
   const devLogin = async (preset: (typeof ROLES)[number]) => {
     setBusy(preset.key)
     try {
-      const res = await api.post('/auth/dev-token', { key: preset.key, role: preset.role })
+      const res = await api.post('/auth/dev-token', {
+        key: preset.key,
+        role: preset.role,
+        // Name the seeded account so it is recognisable rather than "Dev <key>".
+        name: preset.who.split(' · ')[0],
+      })
       setAuth(res.data.access_token, res.data.user)
       router.replace('/(tabs)')
     } catch (e: any) {
