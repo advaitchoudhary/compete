@@ -48,6 +48,8 @@ interface PublicEvent {
   city: string
   venue: string | null
   starts_at: string | null
+  max_teams: number | null
+  min_squad: number | null
   teams: Array<{ name: string; group: string | null }>
   fixtures: Fixture[]
   standings: Array<{
@@ -83,6 +85,12 @@ function roundLabel(round: string): string {
 
 const timeOf = (iso: string | null) =>
   iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+
+/** Short date for the pre-tournament card — "Thu 6 Aug". */
+const dateOf = (iso: string | null) =>
+  iso
+    ? new Date(iso).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
+    : null
 
 export default function PublicTournamentPage() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -137,6 +145,7 @@ export default function PublicTournamentPage() {
   // anyway — grouping by round produced a stutter of repeating Group A / Group B
   // headers. The round is shown per row instead.
   const nextUp = data.fixtures.find((f) => f.match_status !== 'completed')
+  const playedCount = data.fixtures.filter((f) => f.match_status === 'completed').length
 
   return (
     <ScrollView
@@ -177,10 +186,7 @@ export default function PublicTournamentPage() {
         <View style={s.statStrip}>
           <Stat value={String(data.teams.length)} label="TEAMS" />
           <Stat value={String(data.fixtures.length)} label="MATCHES" />
-          <Stat
-            value={String(data.fixtures.filter((f) => f.match_status === 'completed').length)}
-            label="PLAYED"
-          />
+          <Stat value={String(playedCount)} label="PLAYED" />
         </View>
       </View>
 
@@ -210,7 +216,55 @@ export default function PublicTournamentPage() {
         </View>
       ))}
 
+      {/* ── Before there is a schedule ───────────────────────────────────────
+          This link gets shared the moment sign-ups open, which is well before any
+          fixture exists. Rendering the schedule section regardless meant the most
+          important page in the product greeted its first visitors with three
+          zeroes and an empty "Schedule" heading. What they need instead is the
+          invitation: how to enter, and how much room is left. */}
+      {data.fixtures.length === 0 && (
+        <View style={s.section}>
+          {data.status === 'registration' ? (
+            <View style={[s.card, s.inviteCard]}>
+              <Text style={s.inviteEyebrow}>● SIGN-UPS ARE OPEN</Text>
+              <Text style={s.inviteTitle}>Enter your team</Text>
+              <Text style={s.inviteBody}>
+                {data.min_squad
+                  ? `Open the AllSports app, find ${data.name}, and register your squad. You need at least ${data.min_squad} players${data.match_format ? ` for ${data.match_format}` : ''} — just type your mates' names, they don't need accounts.`
+                  : `Open the AllSports app, find ${data.name}, and register your squad.`}
+              </Text>
+              <View style={s.inviteFacts}>
+                <View style={s.inviteFact}>
+                  <Text style={s.inviteFactValue}>
+                    {data.max_teams ? Math.max(data.max_teams - data.teams.length, 0) : '—'}
+                  </Text>
+                  <Text style={s.inviteFactLabel}>SPOTS LEFT</Text>
+                </View>
+                <View style={s.inviteFact}>
+                  <Text style={s.inviteFactValue}>{dateOf(data.starts_at) ?? 'TBC'}</Text>
+                  <Text style={s.inviteFactLabel}>KICK-OFF</Text>
+                </View>
+              </View>
+            </View>
+          ) : (
+            <View style={s.card}>
+              <Text style={s.pendingTitle}>
+                {data.status === 'completed'
+                  ? 'This tournament finished without a recorded schedule.'
+                  : 'The schedule is not out yet.'}
+              </Text>
+              <Text style={s.pendingBody}>
+                {data.status === 'completed'
+                  ? 'No fixtures were generated for it.'
+                  : 'Fixtures appear here as soon as the organizer builds the bracket. Check back closer to kick-off.'}
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
       {/* ── Bracket / schedule ──────────────────────────────────────────────── */}
+      {data.fixtures.length > 0 && (
       <View style={s.section}>
         <Text style={s.sectionTitle}>Schedule</Text>
         {data.fixtures.map((f, fi) => {
@@ -259,11 +313,16 @@ export default function PublicTournamentPage() {
           )
         })}
       </View>
+      )}
 
       {/* ── Top scorers ─────────────────────────────────────────────────────── */}
       {data.top_scorers.length > 0 && (
         <View style={s.section}>
-          <Text style={s.sectionTitle}>Top scorers</Text>
+          {/* Not "Top scorers": the board deliberately includes assist-only
+              players, so a 0 next to a name is correct data under the wrong
+              heading. Naming it for what it is keeps those players visible on the
+              page we most want them to see themselves on. */}
+          <Text style={s.sectionTitle}>Goals & assists</Text>
           <View style={s.card}>
             {data.top_scorers.map((p, i) => (
               <View key={`${p.name}-${i}`} style={s.scorerRow}>
@@ -273,21 +332,25 @@ export default function PublicTournamentPage() {
                   <Text style={s.scorerTeam} numberOfLines={1}>{p.team_name}</Text>
                 </View>
                 {p.assists > 0 && <Text style={s.scorerAssists}>{p.assists} A</Text>}
-                <Text style={s.scorerGoals}>{p.goals}</Text>
+                <Text style={[s.scorerGoals, p.goals === 0 && { color: C.t3 }]}>{p.goals}</Text>
               </View>
             ))}
           </View>
         </View>
       )}
 
-      {/* ── The ask ─────────────────────────────────────────────────────────── */}
-      <View style={s.footer}>
-        <Text style={s.footerTitle}>Played today?</Text>
-        <Text style={s.footerText}>
-          Every player here is rated on AllSports. Find your name and claim your profile to keep
-          your rating for every match you play.
-        </Text>
-      </View>
+      {/* ── The ask ──────────────────────────────────────────────────────────
+          Only once somebody has actually played. "Played today?" on a tournament
+          that has not kicked off is asking a question with no answer. */}
+      {playedCount > 0 && (
+        <View style={s.footer}>
+          <Text style={s.footerTitle}>Played today?</Text>
+          <Text style={s.footerText}>
+            Every player here is rated on AllSports. Find your name and claim your profile to keep
+            your rating for every match you play.
+          </Text>
+        </View>
+      )}
     </ScrollView>
   )
 }
@@ -422,6 +485,16 @@ const s = StyleSheet.create({
   scorerGoals: { color: C.lime, fontSize: 18, fontFamily: FONT.black, minWidth: 20, textAlign: 'right' },
 
   // ── the ask ─────────────────────────────────────────────────────────────────
+  inviteCard: { borderColor: C.lime, borderWidth: 1, backgroundColor: C.limeGlow, padding: SPACE.lg },
+  inviteEyebrow: { color: C.lime, fontSize: 10, fontFamily: FONT.bold, letterSpacing: 1.4 },
+  inviteTitle: { color: C.t1, fontSize: 22, fontFamily: FONT.black, marginTop: 6 },
+  inviteBody: { color: C.t2, fontSize: 13, fontFamily: FONT.regular, lineHeight: 20, marginTop: 6 },
+  inviteFacts: { flexDirection: 'row', gap: SPACE.xl, marginTop: SPACE.lg },
+  inviteFact: {},
+  inviteFactValue: { color: C.lime, fontSize: 20, fontFamily: FONT.black },
+  inviteFactLabel: { color: C.t3, fontSize: 9, fontFamily: FONT.bold, letterSpacing: 1, marginTop: 2 },
+  pendingTitle: { color: C.t1, fontSize: 15, fontFamily: FONT.semibold, padding: SPACE.lg, paddingBottom: 4 },
+  pendingBody: { color: C.t2, fontSize: 13, fontFamily: FONT.regular, lineHeight: 19, paddingHorizontal: SPACE.lg, paddingBottom: SPACE.lg },
   footer: {
     backgroundColor: C.s1,
     borderRadius: RADIUS.lg,

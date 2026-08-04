@@ -4,6 +4,7 @@ import { getDb } from '../../shared/db/client'
 import type { FixtureSource } from '../../shared/db/types'
 import { rankStandings } from './bracket/standings'
 import { fixtureLabel, roundLabel } from './bracket/round-label'
+import { MIN_SQUAD } from './event-registration.routes'
 
 /**
  * The public tournament page — the only unauthenticated surface in the API.
@@ -59,6 +60,7 @@ export async function publicEventRoutes(app: FastifyInstance) {
           'e.city',
           'e.venue',
           'e.starts_at',
+          'e.max_teams',
           'e.entry_fee',
           'e.prize_pool',
           'e.description',
@@ -209,6 +211,12 @@ export async function publicEventRoutes(app: FastifyInstance) {
         entry_fee: event.entry_fee,
         prize_pool: event.prize_pool,
         description: event.description,
+        // A spectator page for an event still taking sign-ups has to be able to
+        // say what joining costs: how many slots are left and how big a squad
+        // must be. Neither is sensitive, and without them the page can only show
+        // zeroes to the person we most want to convert.
+        max_teams: event.max_teams,
+        min_squad: event.match_format ? MIN_SQUAD[event.match_format] : null,
         teams: teams.map((t) => ({ name: t.name, group: t.group_no })),
         fixtures,
         standings,
