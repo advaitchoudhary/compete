@@ -50,6 +50,11 @@ function AuthGuard() {
     const inAuthGroup = segments[0] === 'auth'
     const hasToken = !!getToken()
 
+    // The public tournament page is the acquisition surface — a spectator with no
+    // account must be able to open the link. Bouncing it to /auth would defeat
+    // the entire point, so it is exempt from the guard.
+    if (segments[0] === 'e') return
+
     // The dev-only component preview signs itself in, so the guard must not
     // bounce it to /auth first. Never reachable in a production build.
     if (__DEV__ && segments[0] === 'dev-preview') return
@@ -79,6 +84,8 @@ function AuthGuard() {
       <Stack.Screen name="admin"             options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="tournament/[id]"   options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
+      {/* Public, unauthenticated tournament page — shared with spectators. */}
+      <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />
       <Stack.Screen name="form-tracker"      options={{ animation: 'slide_from_right' }} />
     </Stack>
   )
