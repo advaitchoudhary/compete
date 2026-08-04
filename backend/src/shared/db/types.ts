@@ -303,6 +303,27 @@ export interface FeedEventTable {
   created_at: Generated<Date>
 }
 
+export interface PushTokenTable {
+  id: Generated<string>
+  user_id: string
+  token: string
+  platform: 'ios' | 'android' | 'web' | null
+  device_id: string | null
+  created_at: Generated<Date>
+  updated_at: Generated<Date>
+}
+
+export interface NotificationTable {
+  id: Generated<string>
+  user_id: string
+  type: string
+  title: string
+  body: string
+  data: JsonbColumnWithDefault<Record<string, unknown>>
+  read_at: Date | null
+  created_at: Generated<Date>
+}
+
 export interface OrganizerScoreTable {
   user_id: string
   trust_score: Generated<number>
@@ -322,6 +343,8 @@ export interface Database {
   event_teams: EventTeamTable
   event_referees: EventRefereeTable
   event_fixtures: EventFixtureTable
+  push_tokens: PushTokenTable
+  notifications: NotificationTable
   matches: MatchTable
   match_player_stats: MatchPlayerStatsTable
   rating_history: RatingHistoryTable

@@ -10,6 +10,7 @@ import { checkAchievements } from '../achievements/achievements.service'
 import { assertMatchReferee } from '../matches/match.access'
 import { recomputeStandings } from '../events/bracket/standings'
 import { resolveFixtures } from '../events/bracket/resolver'
+import { notifyUsers, eventPlayerIds } from '../notifications/notify.service'
 
 const SubmitStatsBody = z.object({
   user_id: z.string().uuid(),
@@ -354,6 +355,45 @@ export async function scoresRoutes(app: FastifyInstance) {
  * records, enqueue rating computation, emit feed + achievements, notify realtime.
  * Shared by referee /complete and dual-captain /confirm.
  */
+/**
+ * Fire `rating_ready` exactly once, when the last match of a tournament is done.
+ *
+ * The condition is "no fixture is left without a completed match" — checked against
+ * event_fixtures rather than matches, because a knockout fixture whose teams are
+ * still unknown has no match row at all and would otherwise look finished.
+ */
+async function notifyIfTournamentFinished(
+  db: ReturnType<typeof getDb>,
+  eventId: string
+): Promise<void> {
+  const outstanding = await db
+    .selectFrom('event_fixtures as ef')
+    .leftJoin('matches as m', 'm.id', 'ef.match_id')
+    .select('ef.id')
+    .where('ef.event_id', '=', eventId)
+    .where((eb) =>
+      eb.or([eb('ef.match_id', 'is', null), eb('m.status', '!=', 'completed')])
+    )
+    .executeTakeFirst()
+
+  if (outstanding) return
+
+  const event = await db
+    .selectFrom('events')
+    .select(['id', 'name'])
+    .where('id', '=', eventId)
+    .executeTakeFirst()
+  if (!event) return
+
+  await notifyUsers({
+    userIds: await eventPlayerIds(eventId),
+    type: 'rating_ready',
+    title: 'Your rating is in',
+    body: `${event.name} is done. See how your rating moved and who topped the scoring.`,
+    data: { event_id: eventId },
+  })
+}
+
 async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<string | null> {
   const sport = await db
     .selectFrom('sports').select('slug').where('id', '=', match.sport_id).executeTakeFirstOrThrow()
@@ -380,6 +420,7 @@ async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<
   if (match.event_id) {
     await recomputeStandings(match.event_id)
     await resolveFixtures(match.event_id)
+    await notifyIfTournamentFinished(db, match.event_id)
   }
 
   await updateTeamStats(db, { ...match, winner_team_id: winnerTeamId })

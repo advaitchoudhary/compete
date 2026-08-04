@@ -13,7 +13,25 @@
       "Bash(git status *)",
       "Bash(git diff *)",
       "Bash(pip3 install *)",
-      "Bash(python3 -m pytest --version)"
+      "Bash(python3 -m pytest --version)",
+      "Bash(DATABASE_URL=\"postgresql://allsports:password@localhost:5433/allsports_test\" REDIS_URL=\"redis://localhost:6380\" npm --workspace backend run test -- event-fixtures)",
+      "Bash(DATABASE_URL=\"postgresql://allsports:password@localhost:5433/allsports_test\" REDIS_URL=\"redis://localhost:6380\" npm --workspace backend run test)",
+      "Bash(git commit -q -m 'feat\\(bracket\\): generate a full tournament with tier enforcement *)",
+      "Bash(DATABASE_URL=\"postgresql://allsports:password@localhost:5433/allsports_test\" REDIS_URL=\"redis://localhost:6380\" npm --workspace backend run test -- bracket-resolver)",
+      "Bash(git commit -q -m 'feat\\(bracket\\): standings and self-advancing bracket resolver *)",
+      "Bash(git commit -q -m 'feat\\(bracket\\): read the bracket and group tables with placeholders *)",
+      "Bash(npm --workspace backend run test -- bracket-scheduler)",
+      "Bash(python3 -)",
+      "Bash(git commit -q -m 'fix\\(bracket\\): a qualifier source depends on the whole group stage *)",
+      "Bash(python3 -c ' *)",
+      "Bash(DATABASE_URL=\"postgresql://allsports:password@localhost:5433/allsports_test\" npm --workspace backend run db:migrate)",
+      "Bash(git commit *)",
+      "Bash(/Users/advaitchoudhary/.local/share/virtualenvs/Desktop-grGLEN5t/bin/pytest tests/ -q)",
+      "Read(//Users/advaitchoudhary/Documents/compete/**)",
+      "Bash(curl -s -m 300 -o /dev/null -w 'rebundle: %{http_code}\\\\n' \"http://localhost:8081/node_modules/expo-router/entry.bundle?platform=web&dev=true&hot=false&lazy=true&transform.engine=hermes&transform.routerRoot=app\")",
+      "Bash(python3 -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\(json.dumps\\(d.get\\('expo',{}\\).get\\('web',{}\\),indent=2\\)\\)\")",
+      "Bash(python3 -c 'import sys,json;d=json.load\\(sys.stdin\\);print\\(\"bound\",d[\"bound\"]\\);[print\\(\"  \",p[\"name\"],\"->\",p[\"suggested_rating\"]\\) for p in d[\"players\"]]')",
+      "Bash(DATABASE_URL=\"postgresql://allsports:password@localhost:5433/allsports_test\" REDIS_URL=\"redis://localhost:6380\" npm --workspace backend run test -- public-event)"
     ]
   }
 }

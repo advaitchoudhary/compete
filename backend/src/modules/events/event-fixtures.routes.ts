@@ -4,6 +4,7 @@ import { getDb } from '../../shared/db/client'
 import type { FixtureSource } from '../../shared/db/types'
 import { generateFixtures } from './bracket/generator'
 import { rankStandings } from './bracket/standings'
+import { notifyUsers, eventPlayerIds } from '../notifications/notify.service'
 
 export async function eventFixturesRoutes(app: FastifyInstance) {
   /**
@@ -21,7 +22,7 @@ export async function eventFixturesRoutes(app: FastifyInstance) {
 
       const event = await getDb()
         .selectFrom('events')
-        .select(['id', 'organizer_id'])
+        .select(['id', 'organizer_id', 'name'])
         .where('id', '=', id)
         .executeTakeFirst()
 
@@ -32,6 +33,16 @@ export async function eventFixturesRoutes(app: FastifyInstance) {
 
       const result = await generateFixtures(id)
       if (!result.ok) return reply.code(result.code).send({ error: result.error })
+
+      // Tell every registered player the day's schedule exists. notifyUsers never
+      // throws, so a push problem cannot fail the generation the organizer just did.
+      await notifyUsers({
+        userIds: await eventPlayerIds(id),
+        type: 'fixtures_published',
+        title: 'Fixtures are up',
+        body: `${event.name} — ${result.fixtures} matches scheduled. Check your first kick-off.`,
+        data: { event_id: id },
+      })
 
       return reply.code(201).send({
         event_id: id,
