@@ -53,7 +53,10 @@ function AuthGuard() {
     // The public tournament page is the acquisition surface — a spectator with no
     // account must be able to open the link. Bouncing it to /auth would defeat
     // the entire point, so it is exempt from the guard.
-    if (segments[0] === 'e') return
+    // Both public entry points: the tournament page a spectator opens, and the
+    // claim link a guest opens. Neither has a session yet, so bouncing them to
+    // /auth would defeat the entire acquisition loop.
+    if (segments[0] === 'e' || segments[0] === 'claim') return
 
     // The dev-only component preview signs itself in, so the guard must not
     // bounce it to /auth first. Never reachable in a production build.
@@ -86,6 +89,8 @@ function AuthGuard() {
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
       {/* Public, unauthenticated tournament page — shared with spectators. */}
       <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />
+      {/* Public guest-claim link, opened from WhatsApp. */}
+      <Stack.Screen name="claim"             options={{ animation: 'fade' }} />
       <Stack.Screen name="form-tracker"      options={{ animation: 'slide_from_right' }} />
     </Stack>
   )
