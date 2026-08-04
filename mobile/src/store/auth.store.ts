@@ -8,6 +8,11 @@ interface User {
   username: string | null
   avatar_url: string | null
   city: string | null
+  // Returned by /auth/dev-token, /auth/verify and /users/me. Optional because a
+  // user object persisted by an older build won't have it. Role decides which
+  // entry points show (organizer control room, referee scoring, admin queue) —
+  // it is never the authority on access; every route is gated server-side.
+  role?: 'player' | 'referee' | 'organizer' | 'admin'
 }
 
 interface AuthState {

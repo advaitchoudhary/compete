@@ -86,6 +86,10 @@ function AuthGuard() {
       <Stack.Screen name="referee-apply"     options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
       <Stack.Screen name="admin"             options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="tournament/[id]"   options={{ animation: 'slide_from_right' }} />
+      {/* Organizer control room — create → referees → grade → sign-ups → bracket. */}
+      <Stack.Screen name="organizer/index"          options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="organizer/[id]"           options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="organizer/referees/[id]"  options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
       {/* Public, unauthenticated tournament page — shared with spectators. */}
       <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />

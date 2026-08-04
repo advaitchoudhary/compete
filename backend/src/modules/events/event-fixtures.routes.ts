@@ -4,6 +4,7 @@ import { getDb } from '../../shared/db/client'
 import type { FixtureSource } from '../../shared/db/types'
 import { generateFixtures } from './bracket/generator'
 import { rankStandings } from './bracket/standings'
+import { fixtureLabel, roundLabel } from './bracket/round-label'
 import { notifyUsers, eventPlayerIds } from '../notifications/notify.service'
 
 export async function eventFixturesRoutes(app: FastifyInstance) {
@@ -104,7 +105,7 @@ export async function eventFixturesRoutes(app: FastifyInstance) {
       .execute()
 
     // Round labels are needed to describe a winner_of placeholder in words.
-    const roundBySlot = new Map(rows.map((f) => [f.id, `${f.round} ${f.slot_no}`]))
+    const roundBySlot = new Map(rows.map((f) => [f.id, fixtureLabel(f.round, f.slot_no)]))
 
     const label = (source: FixtureSource, teamName: string | null): string => {
       if (teamName) return teamName
@@ -116,6 +117,7 @@ export async function eventFixturesRoutes(app: FastifyInstance) {
     const fixtures = rows.map((f) => ({
       id: f.id,
       round: f.round,
+      round_label: roundLabel(f.round),
       slot_no: f.slot_no,
       pitch_label: f.pitch_label,
       scheduled_at: f.scheduled_at,

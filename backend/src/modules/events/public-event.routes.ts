@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { getDb } from '../../shared/db/client'
 import type { FixtureSource } from '../../shared/db/types'
 import { rankStandings } from './bracket/standings'
+import { fixtureLabel, roundLabel } from './bracket/round-label'
 
 /**
  * The public tournament page — the only unauthenticated surface in the API.
@@ -96,7 +97,7 @@ export async function publicEventRoutes(app: FastifyInstance) {
         .orderBy('ef.slot_no', 'asc')
         .execute()
 
-      const roundBySlot = new Map(fixtureRows.map((f) => [f.id, `${f.round} ${f.slot_no}`]))
+      const roundBySlot = new Map(fixtureRows.map((f) => [f.id, fixtureLabel(f.round, f.slot_no)]))
 
       const label = (source: FixtureSource, teamName: string | null): string => {
         if (teamName) return teamName
@@ -107,6 +108,7 @@ export async function publicEventRoutes(app: FastifyInstance) {
 
       const fixtures = fixtureRows.map((f) => ({
         round: f.round,
+        round_label: roundLabel(f.round),
         slot_no: f.slot_no,
         pitch_label: f.pitch_label,
         scheduled_at: f.scheduled_at,

@@ -222,9 +222,18 @@ export default function MatchesScreen() {
         {/* ── TOURNAMENTS SECTION ─────────────────────────────── */}
         <View style={s.sectionHeaderRow}>
           <Text style={s.sectionLabel}>TOURNAMENTS</Text>
-          <TouchableOpacity style={s.sectionBtn} onPress={() => router.push('/create-tournament')}>
-            <Text style={s.sectionBtnText}>+ Create</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {/* Organizers get the control room; everyone else only sees Create,
+                which is itself gated server-side by requireRole. */}
+            {(user?.role === 'organizer' || user?.role === 'admin') && (
+              <TouchableOpacity style={s.sectionBtn} onPress={() => router.push('/organizer')}>
+                <Text style={s.sectionBtnText}>🏟️ Manage</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={s.sectionBtn} onPress={() => router.push('/create-tournament')}>
+              <Text style={s.sectionBtnText}>+ Create</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {eventsLoading ? (

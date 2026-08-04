@@ -29,6 +29,26 @@ const RegisterTeamBody = z.object({
   group_no: z.string().optional(),
 })
 
+const EVENT_STATUSES = ['upcoming', 'registration', 'active', 'completed', 'cancelled'] as const
+const SetStatusBody = z.object({ status: z.enum(EVENT_STATUSES) })
+
+/**
+ * Which statuses an event may move to from where it is now.
+ *
+ * Registration opening and closing is the organizer's main lever, so
+ * upcoming↔registration is deliberately two-way — a turf owner who opened sign-ups
+ * early needs to be able to pull them back. Forward motion into `active` is not
+ * reversible, and `completed` is terminal: reopening a finished tournament would
+ * let its already-published results and ratings be edited after the fact.
+ */
+const STATUS_TRANSITIONS: Record<EventStatus, readonly EventStatus[]> = {
+  upcoming: ['registration', 'active', 'cancelled'],
+  registration: ['upcoming', 'active', 'cancelled'],
+  active: ['completed', 'cancelled'],
+  completed: [],
+  cancelled: [],
+}
+
 export async function eventsRoutes(app: FastifyInstance) {
   // POST /events — only verified organizers (or admins) may run a tournament.
   app.post('/events', { preHandler: requireRole('organizer', 'admin') }, async (request, reply) => {
@@ -232,21 +252,36 @@ export async function eventsRoutes(app: FastifyInstance) {
   })
 
   // PATCH /events/:id/status — organizer updates event status
-  app.patch('/events/:id/status', { preHandler: requireAuth }, async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const { status } = request.body as { status: string }
-    const db = getDb()
+  app.patch(
+    '/events/:id/status',
+    { preHandler: requireRole('organizer', 'admin') },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const body = SetStatusBody.safeParse(request.body)
+      if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+      const db = getDb()
 
-    const event = await db
-      .selectFrom('events')
-      .select(['organizer_id', 'status'])
-      .where('id', '=', id)
-      .executeTakeFirst()
+      const event = await db
+        .selectFrom('events')
+        .select(['organizer_id', 'status'])
+        .where('id', '=', id)
+        .executeTakeFirst()
 
-    if (!event) return reply.code(404).send({ error: 'Not found' })
-    if (event.organizer_id !== request.userId) return reply.code(403).send({ error: 'Forbidden' })
+      if (!event) return reply.code(404).send({ error: 'Not found' })
+      if (event.organizer_id !== request.userId && request.userRole !== 'admin') {
+        return reply.code(403).send({ error: 'Forbidden — not your event' })
+      }
 
-    await db.updateTable('events').set({ status } as any).where('id', '=', id).execute()
-    return reply.code(204).send()
-  })
+      const next = body.data.status
+      if (next !== event.status && !STATUS_TRANSITIONS[event.status].includes(next)) {
+        return reply.code(409).send({
+          error: `Cannot go from '${event.status}' to '${next}'`,
+          allowed: STATUS_TRANSITIONS[event.status],
+        })
+      }
+
+      await db.updateTable('events').set({ status: next }).where('id', '=', id).execute()
+      return { event_id: id, status: next }
+    }
+  )
 }

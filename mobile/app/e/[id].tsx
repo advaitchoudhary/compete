@@ -25,6 +25,7 @@ import { C, FONT, SPACE, RADIUS, TIER, ELEV, SPORT } from '../../src/theme'
 
 interface Fixture {
   round: string
+  round_label?: string
   slot_no: number
   pitch_label: string | null
   scheduled_at: string | null
@@ -69,6 +70,8 @@ interface PublicEvent {
 }
 
 /** 'group_a' → 'Group A', 'play_in' → 'Play-in', 'semi' → 'Semi-final'. */
+/** Fallback only — the API now sends `round_label`. Kept so an older cached
+ * response still renders something readable. */
 function roundLabel(round: string): string {
   if (round.startsWith('group_')) return `Group ${round.slice(6).toUpperCase()}`
   if (round === 'play_in') return 'Play-in'
@@ -229,7 +232,7 @@ export default function PublicTournamentPage() {
 
               <View style={s.fixtureTeams}>
                 <View style={s.fixtureCaption}>
-                  <Text style={s.roundLabel}>{roundLabel(f.round)}</Text>
+                  <Text style={s.roundLabel}>{f.round_label ?? roundLabel(f.round)}</Text>
                   {isNext && <Text style={s.nextLabel}>NEXT UP</Text>}
                 </View>
 

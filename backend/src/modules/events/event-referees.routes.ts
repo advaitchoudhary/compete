@@ -13,7 +13,11 @@ const SetRefereesBody = z.object({
         pitch_label: z.string().max(40).optional(),
       })
     )
-    .min(1)
+    // An empty array clears the roster. An organizer who assigned the wrong
+    // official has to be able to take them off again, and the tier guard below
+    // already refuses to leave a graded event with nobody to officiate it:
+    // floorTier([]) is 'amateur', so clearing a 'pro' event's roster 409s.
+    .min(0)
     .max(20),
 })
 
@@ -57,13 +61,17 @@ export async function eventRefereesRoutes(app: FastifyInstance) {
 
       // Every nominee must actually hold the referee role. An organizer cannot
       // smuggle a friend (or themselves) into a scoring position.
-      const nominees = await db
-        .selectFrom('users')
-        .select(['id', 'role', 'referee_tier'])
-        .where('id', 'in', ids)
-        .where('role', 'in', ['referee', 'admin'])
-        .where('is_active', '=', true)
-        .execute()
+      // Skipped when clearing the roster — `where id in ()` is invalid SQL.
+      const nominees =
+        ids.length === 0
+          ? []
+          : await db
+              .selectFrom('users')
+              .select(['id', 'role', 'referee_tier'])
+              .where('id', 'in', ids)
+              .where('role', 'in', ['referee', 'admin'])
+              .where('is_active', '=', true)
+              .execute()
 
       const validIds = new Set(nominees.map((u) => u.id))
       const invalid = ids.filter((uid) => !validIds.has(uid))
@@ -85,6 +93,9 @@ export async function eventRefereesRoutes(app: FastifyInstance) {
 
       await db.transaction().execute(async (trx) => {
         await trx.deleteFrom('event_referees').where('event_id', '=', id).execute()
+        // Kysely cannot render `.values([])`, so an intentional clear is a
+        // delete with nothing following it.
+        if (body.data.referees.length === 0) return
         await trx
           .insertInto('event_referees')
           .values(
