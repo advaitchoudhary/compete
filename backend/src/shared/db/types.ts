@@ -18,10 +18,10 @@ type JsonbColumn<T> = ColumnType<T, T, T>
  * A jsonb column that also carries a DB-side `DEFAULT '{}'::jsonb`, so it may be
  * omitted on insert and Postgres fills it in.
  *
- * These columns currently have that default and could use this type too:
- * `sports.stat_schema`, `sport_profiles.career_stats`, `match_player_stats.stats`,
- * `achievements.data`, `feed_events.payload`. They are left as required for now
- * so this change stays scoped; converting them is safe whenever each is touched.
+ * These columns also carry that default and could use this type when next touched:
+ * `sports.stat_schema`, `match_player_stats.stats`, `achievements.data`,
+ * `feed_events.payload`. Converted so far: `events.rules`,
+ * `sport_profiles.career_stats`.
  */
 type JsonbColumnWithDefault<T> = ColumnType<T, T | undefined, T>
 
@@ -123,7 +123,7 @@ export interface SportProfileTable {
   form_rating: number | null
   matches_played: Generated<number>
   wins: Generated<number>
-  career_stats: JsonbColumn<Record<string, number>>
+  career_stats: JsonbColumnWithDefault<Record<string, number>>
   created_at: Generated<Date>
   updated_at: Generated<Date>
 }
