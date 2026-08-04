@@ -50,6 +50,10 @@ function AuthGuard() {
     const inAuthGroup = segments[0] === 'auth'
     const hasToken = !!getToken()
 
+    // The dev-only component preview signs itself in, so the guard must not
+    // bounce it to /auth first. Never reachable in a production build.
+    if (__DEV__ && segments[0] === 'dev-preview') return
+
     if (!hasToken && !isAuthenticated && !inAuthGroup) {
       router.replace('/auth')
     } else if ((hasToken || isAuthenticated) && inAuthGroup) {

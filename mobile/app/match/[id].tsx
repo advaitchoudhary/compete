@@ -21,6 +21,7 @@ import { useAuthStore } from '../../src/store/auth.store'
 import { api } from '../../src/api/client'
 import { C, SPORT } from '../../src/theme'
 import RefereeScorecard from '../../src/screens/Match/RefereeScorecard'
+import TournamentScorecard from '../../src/screens/Match/TournamentScorecard'
 import RatingOverride from '../../src/screens/Match/RatingOverride'
 import type { MatchDetail } from '../../src/types/tournament'
 
@@ -382,8 +383,31 @@ export default function MatchDetailScreen() {
           </>
         )}
 
-        {/* Referee scorecard — roster-based tap scoring (referee/admin only) */}
-        {(isLive || isScheduled) && sportSchema && isReferee && (
+        {/*
+          Scoring. A tournament match gets the fast, single-screen scorecard —
+          score → review → end — because a referee has ~90 seconds between
+          whistles across 16 matches. A standalone match keeps the detailed
+          scorecard plus the separate rating-override step, where there is time
+          to record every metric and set positions properly.
+        */}
+        {(isLive || isScheduled) && isReferee && match.event_id && (
+          <View style={{ marginHorizontal: 16, marginTop: 4 }}>
+            <TournamentScorecard
+              matchId={id}
+              tier={match.tier}
+              durationMinutes={match.duration_minutes}
+              homeTeamId={match.home_team_id}
+              awayTeamId={match.away_team_id}
+              homeTeamName={match.home_team_name}
+              awayTeamName={match.away_team_name}
+              savedHomeGoals={Number((match.home_score as any)?.goals ?? 0)}
+              savedAwayGoals={Number((match.away_score as any)?.goals ?? 0)}
+              onFinished={() => refetch()}
+            />
+          </View>
+        )}
+
+        {(isLive || isScheduled) && sportSchema && isReferee && !match.event_id && (
           <View style={{ marginHorizontal: 16, marginTop: 4 }}>
             <RefereeScorecard
               matchId={id}
@@ -398,8 +422,9 @@ export default function MatchDetailScreen() {
           </View>
         )}
 
-        {/* Rating override — referee's eye-test on the engine's suggestions (live only) */}
-        {isLive && isReferee && (
+        {/* Rating override — separate step for standalone matches only; the
+            tournament scorecard has it built into its review phase. */}
+        {isLive && isReferee && !match.event_id && (
           <View style={{ marginHorizontal: 16 }}>
             <RatingOverride
               matchId={id}

@@ -68,6 +68,11 @@ export interface MatchDetail extends MatchSummary {
   winner_team_id: string | null
   referee_id: string | null
   tier?: string
+  // Inherited from the parent event when the fixture generator creates the match.
+  // duration_minutes also drives the rating match-weight (a 12-minute 5-a-side
+  // must not move Elo like a 90-minute game).
+  format?: '5-a-side' | '7-a-side' | '11-a-side' | null
+  duration_minutes?: number | null
   player_stats: PlayerStatEntry[]
 }
 
