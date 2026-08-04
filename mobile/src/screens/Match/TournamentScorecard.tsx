@@ -276,7 +276,11 @@ export default function TournamentScorecard({
       await api.post(`/matches/${matchId}/ratings`, {
         ratings: suggestions.map((s) => ({ user_id: s.userId, rating: s.value })),
       })
-      await api.post(`/matches/${matchId}/complete`)
+      // Send an explicit {} — the axios client sets a default
+      // Content-Type: application/json, and Fastify rejects that header with an
+      // empty body as a 400. The same `{}` appears in app/match/[id].tsx for this
+      // reason. Without it, "End match" fails.
+      await api.post(`/matches/${matchId}/complete`, {})
       qc.invalidateQueries({ queryKey: ['match', matchId] })
       onFinished?.()
       notify('Match complete', `${homeGoals}–${awayGoals} recorded. Ratings locked in.`)
