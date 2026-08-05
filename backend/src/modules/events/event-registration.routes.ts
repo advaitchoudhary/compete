@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requireAuth } from '../../shared/middleware/auth'
+import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
 import type { MatchFormat } from '../../shared/db/types'
 
@@ -300,4 +300,132 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
       teams: teams.map((t) => ({ ...t, players: byTeam.get(t.team_id) ?? [] })),
     }
   })
+
+  /**
+   * DELETE /events/:id/teams/:teamId
+   *
+   * Un-registers a team. Teams withdraw — someone can't get eleven people to a
+   * turf on a Sunday — and until now the only way to undo a registration was a
+   * manual DELETE in Postgres.
+   *
+   * This removes the *registration*, not the team: the squad, its guests and
+   * their accumulated stats all survive, because that team may well enter the
+   * next tournament. Only the `event_teams` row goes.
+   *
+   * Removing a team invalidates any bracket built from it, so an existing
+   * bracket is torn down here and must be regenerated. That is safe only while
+   * nothing has kicked off, which is exactly the condition checked below — the
+   * same rule POST /events/:id/fixtures uses for regeneration. Once a match has
+   * started, the field is fixed and this returns 409.
+   *
+   * Remaining seeds are resequenced to 1..N. A gap would otherwise leak into the
+   * planner, which uses seed order for snake group distribution and bye
+   * allocation.
+   */
+  app.delete(
+    '/events/:id/teams/:teamId',
+    { preHandler: requireRole('organizer', 'admin') },
+    async (request, reply) => {
+      const { id: eventId, teamId } = request.params as { id: string; teamId: string }
+      const db = getDb()
+
+      const event = await db
+        .selectFrom('events')
+        .select(['id', 'organizer_id'])
+        .where('id', '=', eventId)
+        .executeTakeFirst()
+
+      if (!event) return reply.code(404).send({ error: 'Event not found' })
+      if (event.organizer_id !== request.userId && request.userRole !== 'admin') {
+        return reply.code(403).send({ error: 'Forbidden — not your event' })
+      }
+
+      const registration = await db
+        .selectFrom('event_teams as et')
+        .innerJoin('teams as t', 't.id', 'et.team_id')
+        .select(['et.team_id', 't.name'])
+        .where('et.event_id', '=', eventId)
+        .where('et.team_id', '=', teamId)
+        .executeTakeFirst()
+
+      if (!registration) {
+        return reply.code(404).send({ error: 'That team is not registered in this event' })
+      }
+
+      const started = await db
+        .selectFrom('matches')
+        .select('id')
+        .where('event_id', '=', eventId)
+        .where('status', '!=', 'scheduled')
+        .executeTakeFirst()
+
+      if (started) {
+        return reply.code(409).send({
+          error: 'A match has already kicked off — teams can no longer be removed',
+        })
+      }
+
+      const result = await db.transaction().execute(async (trx) => {
+        // Fixtures first: event_fixtures.match_id is ON DELETE SET NULL, so
+        // dropping matches first would silently blank the link instead of
+        // removing the row.
+        const fixtures = await trx
+          .deleteFrom('event_fixtures')
+          .where('event_id', '=', eventId)
+          .executeTakeFirst()
+
+        // Only scheduled matches exist at this point (guarded above).
+        // match_player_stats cascades from matches.
+        const matches = await trx
+          .deleteFrom('matches')
+          .where('event_id', '=', eventId)
+          .executeTakeFirst()
+
+        await trx
+          .deleteFrom('event_teams')
+          .where('event_id', '=', eventId)
+          .where('team_id', '=', teamId)
+          .execute()
+
+        // Resequence so seeds stay 1..N with no hole.
+        const remaining = await trx
+          .selectFrom('event_teams')
+          .select(['team_id', 'seed'])
+          .where('event_id', '=', eventId)
+          .orderBy('seed', 'asc')
+          .orderBy('registered_at', 'asc')
+          .execute()
+
+        for (const [i, row] of remaining.entries()) {
+          if (row.seed !== i + 1) {
+            await trx
+              .updateTable('event_teams')
+              .set({ seed: i + 1 })
+              .where('event_id', '=', eventId)
+              .where('team_id', '=', row.team_id)
+              .execute()
+          }
+        }
+
+        // Group assignments came from the bracket we just tore down.
+        await trx
+          .updateTable('event_teams')
+          .set({ group_no: null })
+          .where('event_id', '=', eventId)
+          .execute()
+
+        return {
+          fixtures_cleared: Number(fixtures?.numDeletedRows ?? 0),
+          matches_cleared: Number(matches?.numDeletedRows ?? 0),
+          teams_remaining: remaining.length,
+        }
+      })
+
+      return {
+        event_id: eventId,
+        removed: { team_id: teamId, name: registration.name },
+        ...result,
+      }
+    }
+  )
 }

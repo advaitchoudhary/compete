@@ -5,10 +5,11 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '../../src/store/auth.store'
 import { api } from '../../src/api/client'
 import { C, SPORT } from '../../src/theme'
+import { confirm, notify } from '../../src/lib/dialog'
 import type { EventDetail, EventTeam, MatchSummary } from '../../src/types/tournament'
 
 const EVENT_STATUS_CFG: Record<string, { label: string; color: string; bg: string }> = {
@@ -98,11 +99,19 @@ const tr = StyleSheet.create({
   points:    { color: C.lime, fontSize: 13, fontWeight: '800' },
 })
 
+const errText = (e: any): string => {
+  const err = e?.response?.data?.error
+  if (typeof err === 'string') return err
+  if (err?.fieldErrors) return Object.values(err.fieldErrors as Record<string, string[]>).flat().join(', ')
+  return e?.message ?? 'Something went wrong'
+}
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function TournamentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
+  const qc = useQueryClient()
   const { user } = useAuthStore()
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -149,6 +158,38 @@ export default function TournamentDetailScreen() {
    */
   function handleRegister() {
     router.push(`/register-team/${id}`)
+  }
+
+  /**
+   * Builds the entire bracket in one call: groups, knockout rounds, slot times,
+   * pitch assignments and a referee per match. Re-runnable until the first
+   * kick-off, and refused with a readable reason if the event is not ready (no
+   * refereed pitch, fewer than two teams, a grade its referees cannot officiate).
+   */
+  const autoGen = useMutation({
+    mutationFn: () => api.post(`/events/${id}/fixtures`, {}).then(r => r.data),
+    onSuccess: (d: any) => {
+      qc.invalidateQueries({ queryKey: ['event', id] })
+      notify(
+        'Fixtures generated',
+        `${d.fixtures} fixtures, ${d.matches} matches ready.` +
+          (d.fell_back ? `\n\nFell back to a straight knockout: ${d.fallback_reason}` : '')
+      )
+    },
+    // The backend explains exactly what is missing, so surface that verbatim
+    // rather than a generic failure.
+    onError: (e: any) => notify("Can't generate yet", errText(e)),
+  })
+
+  function handleAutoGenerate() {
+    confirm(
+      'Auto-generate fixtures?',
+      matches.length > 0
+        ? 'This replaces the current schedule and re-seeds from the registered teams.'
+        : `Builds the full bracket from the ${teams.length} registered teams, assigning kick-off times, pitches and referees.`,
+      () => autoGen.mutate(),
+      'Generate'
+    )
   }
 
   // ── Loading / Error states ────────────────────────────────────────────────
@@ -271,16 +312,28 @@ export default function TournamentDetailScreen() {
         <View style={s.sectionHeader}>
           <Text style={s.sectionLabel}>MATCHES</Text>
           {isOrganizer && (
-            <TouchableOpacity
-              style={s.sectionAction}
-              onPress={() => router.push({
-                pathname: '/create-match',
-                params: { event_id: id, sport: eventMeta.sport_slug },
-              })}
-              activeOpacity={0.75}
-            >
-              <Text style={s.sectionActionText}>+ Add Match</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity
+                style={s.sectionAction}
+                onPress={handleAutoGenerate}
+                disabled={autoGen.isPending}
+                activeOpacity={0.75}
+              >
+                <Text style={s.sectionActionText}>
+                  {autoGen.isPending ? '…' : '⚡ Auto-generate'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={s.sectionAction}
+                onPress={() => router.push({
+                  pathname: '/create-match',
+                  params: { event_id: id, sport: eventMeta.sport_slug },
+                })}
+                activeOpacity={0.75}
+              >
+                <Text style={s.sectionActionText}>+ Add Match</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
@@ -288,16 +341,33 @@ export default function TournamentDetailScreen() {
           <View style={s.emptySection}>
             <Text style={s.emptyText}>No matches scheduled yet.</Text>
             {isOrganizer && (
-              <TouchableOpacity
-                style={s.limeCtaBtn}
-                onPress={() => router.push({
-                  pathname: '/create-match',
-                  params: { event_id: id, sport: eventMeta.sport_slug },
-                })}
-                activeOpacity={0.85}
-              >
-                <Text style={s.limeCtaText}>Create First Match →</Text>
-              </TouchableOpacity>
+              <>
+                {/* Auto-generate is the primary action and adding matches by hand
+                    is the fallback, not the other way round. One press produces
+                    the whole bracket — rounds, kick-off times, pitches and a
+                    referee per match — where "Add Match" builds one fixture with
+                    none of that wiring. */}
+                <TouchableOpacity
+                  style={[s.limeCtaBtn, autoGen.isPending && { opacity: 0.5 }]}
+                  disabled={autoGen.isPending}
+                  onPress={handleAutoGenerate}
+                  activeOpacity={0.85}
+                >
+                  {autoGen.isPending
+                    ? <ActivityIndicator color={C.limeText} />
+                    : <Text style={s.limeCtaText}>⚡ Auto-generate fixtures →</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => router.push({
+                    pathname: '/create-match',
+                    params: { event_id: id, sport: eventMeta.sport_slug },
+                  })}
+                  activeOpacity={0.7}
+                  style={{ marginTop: 12 }}
+                >
+                  <Text style={s.secondaryLink}>or add a single match manually</Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         ) : (
@@ -382,6 +452,7 @@ const s = StyleSheet.create({
   },
   sectionLabel:      { color: C.t3, fontSize: 11, fontWeight: '700', letterSpacing: 2 },
   sectionAction:     { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, backgroundColor: C.s2, borderWidth: 1, borderColor: C.b1 },
+  secondaryLink: { color: C.t2, fontSize: 13, fontWeight: '600', textAlign: 'center' },
   sectionActionText: { color: C.lime, fontSize: 12, fontWeight: '700' },
 
   // Card container for teams

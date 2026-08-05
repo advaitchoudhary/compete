@@ -112,6 +112,23 @@ export default function ControlRoomScreen() {
   const setStatus = (status: string) =>
     run(`status-${status}`, () => api.patch(`/events/${id}/status`, { status }))
 
+  /**
+   * Removing a team tears down any existing bracket, because the fixtures were
+   * seeded from a field that no longer exists. The confirm says so plainly rather
+   * than letting an organizer discover their schedule vanished.
+   */
+  const removeTeam = (teamId: string, name: string) => {
+    const hasBracket = (setup?.fixtures_count ?? 0) > 0
+    confirm(
+      `Remove ${name}?`,
+      hasBracket
+        ? `Their registration is deleted and the current bracket is torn down — you'll need to generate fixtures again. The team and its players are kept.`
+        : `Their registration is deleted. The team and its players are kept, so they can enter other tournaments.`,
+      () => run(`rm-${teamId}`, () => api.delete(`/events/${id}/teams/${teamId}`)),
+      'Remove'
+    )
+  }
+
   const generate = () =>
     run('fixtures', () => api.post(`/events/${id}/fixtures`, {}), (r) => {
       const d = r.data
@@ -275,6 +292,21 @@ export default function ControlRoomScreen() {
                   <Text style={s.teamSeed}>{t.seed ?? i + 1}</Text>
                   <Text style={s.teamName} numberOfLines={1}>{t.name}</Text>
                   {t.group_no && <Text style={s.teamGroup}>Group {t.group_no}</Text>}
+                  {/* Teams withdraw. Hidden once a match has kicked off, because
+                      the backend refuses it from then on and offering a button
+                      that can only fail is worse than not offering one. */}
+                  {setup.played_count === 0 && (
+                    <TouchableOpacity
+                      onPress={() => removeTeam(t.id, t.name)}
+                      disabled={busy !== null}
+                      hitSlop={8}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={s.teamRemove}>
+                        {busy === `rm-${t.id}` ? '…' : '✕'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
             </View>
@@ -598,6 +630,7 @@ const s = StyleSheet.create({
   },
   teamName: { color: C.t1, fontSize: 13, fontFamily: FONT.medium, flex: 1 },
   teamGroup: { color: C.t2, fontSize: 10, fontFamily: FONT.bold, letterSpacing: 0.5 },
+  teamRemove: { color: C.t3, fontSize: 13, fontFamily: FONT.bold, paddingHorizontal: 4 },
 
   openBanner: {
     backgroundColor: C.limeGlow, borderRadius: RADIUS.md, paddingVertical: 9, alignItems: 'center',
