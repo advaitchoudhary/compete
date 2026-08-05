@@ -28,8 +28,19 @@ export interface EventTeam {
   organizer_id?: string
 }
 
-export interface EventDetail {
-  event: EventSummary
+/**
+ * GET /events/:id — the event's own columns are returned FLAT, not nested.
+ *
+ * The backend does `return { ...event, teams, matches }`. This type previously
+ * declared `event: EventSummary`, so `data.event` was always undefined and the
+ * tournament screen's `if (!eventMeta)` branch fired for every tournament that
+ * has ever existed — "Tournament not found." on a 200 response.
+ */
+export interface EventDetail extends EventSummary {
+  tier: string
+  match_format: string | null
+  match_duration_minutes: number | null
+  sport_name: string
   teams: EventTeam[]
   matches: MatchSummary[]
 }

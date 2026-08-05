@@ -1,15 +1,15 @@
 import { useMemo } from 'react'
 import {
   ScrollView, View, Text, StyleSheet,
-  TouchableOpacity, ActivityIndicator, Alert, RefreshControl,
+  TouchableOpacity, ActivityIndicator, RefreshControl,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '../../src/store/auth.store'
 import { api } from '../../src/api/client'
 import { C, SPORT } from '../../src/theme'
-import type { EventDetail, EventSummary, EventTeam, MatchSummary } from '../../src/types/tournament'
+import type { EventDetail, EventTeam, MatchSummary } from '../../src/types/tournament'
 
 const EVENT_STATUS_CFG: Record<string, { label: string; color: string; bg: string }> = {
   upcoming:     { label: 'UPCOMING', color: C.amber, bg: 'rgba(245,158,11,0.14)' },
@@ -24,10 +24,6 @@ const MATCH_STATUS_CFG: Record<string, { label: string; color: string; bg: strin
   scheduled: { label: 'UPCOMING',  color: C.amber, bg: 'rgba(245,158,11,0.14)' },
   completed: { label: 'DONE',      color: C.t3,    bg: C.s3                    },
   cancelled: { label: 'CANCELLED', color: C.t3,    bg: C.s3                    },
-}
-
-function normalise(raw: any): any[] {
-  return Array.isArray(raw) ? raw : (raw?.data ?? raw?.items ?? [])
 }
 
 // ─── TournamentMatchRow ───────────────────────────────────────────────────────
@@ -107,7 +103,6 @@ const tr = StyleSheet.create({
 export default function TournamentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
-  const queryClient = useQueryClient()
   const { user } = useAuthStore()
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -116,7 +111,9 @@ export default function TournamentDetailScreen() {
     enabled: !!id,
   })
 
-  const eventMeta: EventSummary | undefined = data?.event
+  // The event's fields come back flat, not under a nested `event` key — see
+  // EventDetail. Reading data.event here made every tournament "not found".
+  const eventMeta: EventDetail | undefined = data
   const teams: EventTeam[]     = data?.teams   ?? []
   const matches: MatchSummary[] = data?.matches ?? []
 
@@ -126,7 +123,9 @@ export default function TournamentDetailScreen() {
   const stCfg = eventMeta ? (EVENT_STATUS_CFG[eventMeta.status] ?? EVENT_STATUS_CFG.upcoming) : EVENT_STATUS_CFG.upcoming
 
   const isOrganizer = !!user && user.id === eventMeta?.organizer_id
-  const canRegister = !!eventMeta && ['upcoming', 'registration'].includes(eventMeta.status)
+  // Must match the backend: /events/:id/register accepts 'registration' only.
+  // Including 'upcoming' offered a button that could only ever 409.
+  const canRegister = eventMeta?.status === 'registration'
 
   // Group matches by round
   const byRound = useMemo(() => {
@@ -138,63 +137,18 @@ export default function TournamentDetailScreen() {
   }, [matches])
   const rounds = Object.keys(byRound)
 
-  // Fetch user's captained teams (for register flow)
-  const { data: myTeamsRaw } = useQuery({
-    queryKey: ['my-teams', user?.id, eventMeta?.sport_slug],
-    queryFn: () =>
-      api.get('/teams', { params: { sport: eventMeta?.sport_slug } })
-        .then(r => {
-          const all = normalise(r.data)
-          return all.filter((t: any) => t.organizer_id === user?.id)
-        }),
-    enabled: !!user && !!eventMeta && canRegister,
-  })
-  const myTeams: any[] = myTeamsRaw ?? []
-  const registeredTeamIds = new Set(teams.map(t => t.id))
-  const eligibleTeams = myTeams.filter((t: any) => !registeredTeamIds.has(t.id))
 
-  // Register team mutation
-  const registerMutation = useMutation({
-    mutationFn: (teamId: string) =>
-      api.post(`/events/${id}/teams`, { team_id: teamId }).then(r => r.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['event', id] })
-      Alert.alert('Registered!', 'Your team has been added to this tournament.')
-    },
-    onError: (err: any) => {
-      Alert.alert('Error', err?.response?.data?.message ?? err?.message ?? 'Registration failed')
-    },
-  })
-
+  /**
+   * Registration goes to the squad form, not to POST /events/:id/teams.
+   *
+   * That older endpoint takes an existing team_id and never checks the event's
+   * a-side squad minimum, so it could put a 3-player "team" into an 11-a-side
+   * tournament and break fixture generation later. The squad flow enforces the
+   * minimum, creates guests for players without accounts, and is the only path
+   * that produces a roster the tournament can actually be played with.
+   */
   function handleRegister() {
-    if (eligibleTeams.length === 0) {
-      Alert.alert(
-        'No Eligible Team',
-        'You need to be the captain of a team to register. Create a team first.',
-        [{ text: 'OK' }],
-      )
-      return
-    }
-    if (eligibleTeams.length === 1) {
-      Alert.alert(
-        'Register Team',
-        `Register "${eligibleTeams[0].name}" for this tournament?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Register', onPress: () => registerMutation.mutate(eligibleTeams[0].id) },
-        ],
-      )
-      return
-    }
-    // Multiple teams — show picker
-    const buttons = [
-      ...eligibleTeams.map((t: any) => ({
-        text: t.name,
-        onPress: () => registerMutation.mutate(t.id),
-      })),
-      { text: 'Cancel', style: 'cancel' as const },
-    ]
-    Alert.alert('Select Team', 'Which team would you like to register?', buttons)
+    router.push(`/register-team/${id}`)
   }
 
   // ── Loading / Error states ────────────────────────────────────────────────
@@ -281,16 +235,13 @@ export default function TournamentDetailScreen() {
         {/* ── TEAMS SECTION ────────────────────────────────────── */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionLabel}>TEAMS</Text>
-          {canRegister && eligibleTeams.length > 0 && (
+          {canRegister && (
             <TouchableOpacity
               style={s.sectionAction}
               onPress={handleRegister}
-              disabled={registerMutation.isPending}
               activeOpacity={0.75}
             >
-              <Text style={s.sectionActionText}>
-                {registerMutation.isPending ? 'Registering…' : '+ Register'}
-              </Text>
+              <Text style={s.sectionActionText}>+ Register</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -370,18 +321,14 @@ export default function TournamentDetailScreen() {
       </ScrollView>
 
       {/* ── STICKY BOTTOM ACTION ─────────────────────────────── */}
-      {(canRegister && eligibleTeams.length > 0) && (
+      {canRegister && (
         <View style={s.stickyBottom}>
           <TouchableOpacity
             style={[s.limeCtaBtn, { flex: 1, marginHorizontal: 0, flexDirection: 'row', justifyContent: 'center', gap: 8 }]}
             onPress={handleRegister}
-            disabled={registerMutation.isPending}
             activeOpacity={0.85}
           >
-            {registerMutation.isPending
-              ? <ActivityIndicator color={C.limeText} />
-              : <Text style={s.limeCtaText}>Register Your Team →</Text>
-            }
+            <Text style={s.limeCtaText}>Register Your Team →</Text>
           </TouchableOpacity>
         </View>
       )}
