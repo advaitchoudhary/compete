@@ -18,9 +18,10 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
+  TouchableOpacity,
 } from 'react-native'
-import { useLocalSearchParams } from 'expo-router'
-import { BASE_URL } from '../../src/api/client'
+import { useLocalSearchParams, useRouter } from 'expo-router'
+import { BASE_URL, getToken } from '../../src/api/client'
 import { C, FONT, SPACE, RADIUS, TIER, ELEV, SPORT } from '../../src/theme'
 
 interface Fixture {
@@ -94,6 +95,7 @@ const dateOf = (iso: string | null) =>
 
 export default function PublicTournamentPage() {
   const { id } = useLocalSearchParams<{ id: string }>()
+  const router = useRouter()
   const [data, setData] = useState<PublicEvent | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -230,8 +232,8 @@ export default function PublicTournamentPage() {
               <Text style={s.inviteTitle}>Enter your team</Text>
               <Text style={s.inviteBody}>
                 {data.min_squad
-                  ? `Open the AllSports app, find ${data.name}, and register your squad. You need at least ${data.min_squad} players${data.match_format ? ` for ${data.match_format}` : ''} — just type your mates' names, they don't need accounts.`
-                  : `Open the AllSports app, find ${data.name}, and register your squad.`}
+                  ? `You need at least ${data.min_squad} players${data.match_format ? ` for ${data.match_format}` : ''} — just type your mates' names, they don't need accounts.`
+                  : 'Register your squad to enter.'}
               </Text>
               <View style={s.inviteFacts}>
                 <View style={s.inviteFact}>
@@ -245,6 +247,24 @@ export default function PublicTournamentPage() {
                   <Text style={s.inviteFactLabel}>KICK-OFF</Text>
                 </View>
               </View>
+
+              {/* The point of the whole page. Registration needs a session, but a
+                  visitor arriving from WhatsApp has none — so carry the intent
+                  through sign-in via `next` rather than dropping them on the home
+                  tab and making them find this tournament again. */}
+              <TouchableOpacity
+                style={s.enterBtn}
+                activeOpacity={0.85}
+                onPress={() =>
+                  router.push(
+                    getToken()
+                      ? `/register-team/${data.id}`
+                      : `/auth?next=${encodeURIComponent(`/register-team/${data.id}`)}`
+                  )
+                }
+              >
+                <Text style={s.enterBtnText}>Enter your team →</Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <View style={s.card}>
@@ -492,6 +512,11 @@ const s = StyleSheet.create({
   inviteFacts: { flexDirection: 'row', gap: SPACE.xl, marginTop: SPACE.lg },
   inviteFact: {},
   inviteFactValue: { color: C.lime, fontSize: 20, fontFamily: FONT.black },
+  enterBtn: {
+    marginTop: SPACE.lg, backgroundColor: C.lime, borderRadius: RADIUS.md,
+    paddingVertical: 14, alignItems: 'center', ...ELEV.glow(C.lime, 0.3),
+  },
+  enterBtnText: { color: C.limeText, fontSize: 15, fontFamily: FONT.bold },
   inviteFactLabel: { color: C.t3, fontSize: 9, fontFamily: FONT.bold, letterSpacing: 1, marginTop: 2 },
   pendingTitle: { color: C.t1, fontSize: 15, fontFamily: FONT.semibold, padding: SPACE.lg, paddingBottom: 4 },
   pendingBody: { color: C.t2, fontSize: 13, fontFamily: FONT.regular, lineHeight: 19, paddingHorizontal: SPACE.lg, paddingBottom: SPACE.lg },

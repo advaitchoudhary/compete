@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { View, ActivityIndicator } from 'react-native'
-import { Stack, useRouter, useSegments } from 'expo-router'
+import { Stack, useRouter, useSegments, usePathname } from 'expo-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -30,6 +30,7 @@ const queryClient = new QueryClient({
 function AuthGuard() {
   const { isAuthenticated, setAuth } = useAuthStore()
   const segments = useSegments()
+  const pathname = usePathname()
   const router = useRouter()
   const [ready, setReady] = useState(false)
 
@@ -63,11 +64,15 @@ function AuthGuard() {
     if (__DEV__ && segments[0] === 'dev-preview') return
 
     if (!hasToken && !isAuthenticated && !inAuthGroup) {
-      router.replace('/auth')
+      // Carry where they were trying to go, so a deep link into an authed screen
+      // (a shared /register-team/<id>, say) resumes after sign-in instead of
+      // dumping them on the home tab.
+      const next = pathname && pathname !== '/' ? `?next=${encodeURIComponent(pathname)}` : ''
+      router.replace(`/auth${next}` as any)
     } else if ((hasToken || isAuthenticated) && inAuthGroup) {
       router.replace('/(tabs)')
     }
-  }, [ready, isAuthenticated, segments])
+  }, [ready, isAuthenticated, segments, pathname])
 
   if (!ready) {
     return (
@@ -90,6 +95,8 @@ function AuthGuard() {
       <Stack.Screen name="organizer/index"          options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="organizer/[id]"           options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="organizer/referees/[id]"  options={{ animation: 'slide_from_right' }} />
+      {/* Squad registration — reached from the public link's "Enter your team". */}
+      <Stack.Screen name="register-team/[id]"        options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
       {/* Public, unauthenticated tournament page — shared with spectators. */}
       <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />

@@ -4,7 +4,7 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform,
   ActivityIndicator, Alert,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { useAuthStore } from '../src/store/auth.store'
 import { api } from '../src/api/client'
 import { C, FONT, SPACE, RADIUS, ELEV } from '../src/theme'
@@ -20,6 +20,10 @@ const ROLES = [
 
 export default function AuthScreen() {
   const router = useRouter()
+  // Set when a visitor arrived from the public tournament link wanting to enter a
+  // team. Without it they'd land on the home tab after signing in and have to find
+  // the tournament again, which is where that intent goes to die.
+  const { next } = useLocalSearchParams<{ next?: string }>()
   const { setAuth } = useAuthStore()
   const [phone, setPhone] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
@@ -34,7 +38,7 @@ export default function AuthScreen() {
         name: preset.who.split(' · ')[0],
       })
       setAuth(res.data.access_token, res.data.user)
-      router.replace('/(tabs)')
+      router.replace((next ?? '/(tabs)') as any)
     } catch (e: any) {
       notify('Error', e?.response?.data?.error ?? 'Login failed')
     } finally {
