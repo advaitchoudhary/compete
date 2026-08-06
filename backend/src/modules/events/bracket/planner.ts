@@ -47,14 +47,46 @@ function roundName(size: number): string {
 }
 
 /**
+ * Standard bracket positions for a power-of-two field, as 0-based indices into a
+ * list held in seed order.
+ *
+ *   bracketOrder(4) → [0, 3, 1, 2]   (1v4, 2v3)
+ *   bracketOrder(8) → [0, 7, 3, 4, 1, 6, 2, 5]   (1v8, 4v5, 2v7, 3v6)
+ *
+ * Built by the usual reflection: each round, every seed s at position i gains a
+ * partner (2n − 1 − s) beside it. The property that matters is that the two best
+ * seeds land in opposite halves and so can only meet in the final.
+ */
+function bracketOrder(size: number): number[] {
+  let order = [0]
+  while (order.length < size) {
+    const n = order.length * 2
+    const next: number[] = []
+    for (const s of order) {
+      next.push(s)
+      next.push(n - 1 - s)
+    }
+    order = next
+  }
+  return order
+}
+
+/**
  * Build the elimination rounds above a set of entry slots.
  *
- * `entries` are sources filling the first full round, already in bracket order.
- * Length must be a power of two. Returns fixtures for every round up to the final.
+ * `entries` arrive in SEED order — strongest first — and are placed into standard
+ * bracket positions here. Length must be a power of two. Returns fixtures for
+ * every round up to the final.
+ *
+ * Placing them was previously the caller's job and nobody did it: entries were
+ * paired adjacently, so an 8-team knockout drew seed 1 against seed 2 in the
+ * first round, and a 6-team draw put both bye teams — the top two seeds — against
+ * each other in the semi-final. Byes were being handed out as a reward and then
+ * immediately cancelled out one round later.
  */
 function buildEliminationRounds(entries: PlannedSource[]): PlannedFixture[] {
   const fixtures: PlannedFixture[] = []
-  let current = entries
+  let current = bracketOrder(entries.length).map((i) => entries[i])
 
   while (current.length > 1) {
     const round = roundName(current.length)
@@ -211,12 +243,15 @@ export function planBracket(
   // field can fill. Minimum 2 so there is always a final.
   const qualifiers = Math.max(2, floorPow2(Math.min(groupCount * 2, n)))
 
-  // Standard pairing: 1 v Q, 2 v Q−1, … Deterministic and explainable; it can
-  // pair two teams from one group, which we accept for a single-day event.
+  // Qualifiers in seed order; buildEliminationRounds places them into standard
+  // bracket positions (1 v Q, 2 v Q−1, … with the top seeds in opposite halves).
+  // This used to emit the first-round pairs directly, which was right for four
+  // qualifiers but put seeds 1 and 2 in the same half once there were eight.
+  // Deterministic and explainable; it can pair two teams from one group, which we
+  // accept for a single-day event.
   const entries: PlannedSource[] = []
-  for (let i = 0; i < qualifiers / 2; i++) {
-    entries.push({ type: 'qualifier', seed: i + 1 })
-    entries.push({ type: 'qualifier', seed: qualifiers - i })
+  for (let seed = 1; seed <= qualifiers; seed++) {
+    entries.push({ type: 'qualifier', seed })
   }
 
   return {

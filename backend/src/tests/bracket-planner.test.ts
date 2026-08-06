@@ -203,3 +203,92 @@ describe('planBracket — group_knockout', () => {
     }
   })
 })
+
+/**
+ * Which half of the bracket a fixture's winner ends up in, by walking the
+ * winner_of chain to the final. Used to assert that two seeds cannot meet before
+ * the final — the property that makes a bye worth anything.
+ */
+function halfOfFinal(plan: BracketPlan, startKey: string): 'home' | 'away' {
+  const byKey = new Map(plan.fixtures.map((f) => [f.key, f]))
+  const final = plan.fixtures.find((f) => f.round === 'final')!
+  let key = startKey
+  // Walk up until the fixture we came from is one of the final's two sides.
+  for (let guard = 0; guard < 64; guard++) {
+    if (final.home.type === 'winner_of' && final.home.ref === key) return 'home'
+    if (final.away.type === 'winner_of' && final.away.ref === key) return 'away'
+    const parent = plan.fixtures.find(
+      (f) =>
+        (f.home.type === 'winner_of' && f.home.ref === key) ||
+        (f.away.type === 'winner_of' && f.away.ref === key)
+    )
+    if (!parent) throw new Error(`no parent for ${key}`)
+    key = parent.key
+    void byKey
+  }
+  throw new Error('cycle walking to final')
+}
+
+/** The fixture in which a given team id first appears. */
+function entryFixture(plan: BracketPlan, teamId: string) {
+  return plan.fixtures.find(
+    (f) =>
+      (f.home.type === 'team' && f.home.team_id === teamId) ||
+      (f.away.type === 'team' && f.away.team_id === teamId)
+  )!
+}
+
+describe('planBracket — seeding keeps the best apart', () => {
+  it('a power-of-two knockout draws 1v8 and 4v5, not 1v2', () => {
+    const plan = planBracket(ids(8), 'knockout')
+    const first = plan.fixtures.filter((f) => f.round === 'quarter')
+    const pairs = first.map((f) => [
+      (f.home as { team_id: string }).team_id,
+      (f.away as { team_id: string }).team_id,
+    ])
+    // t1 is the top seed, t8 the weakest.
+    expect(pairs).toContainEqual(['t1', 't8'])
+    expect(pairs).toContainEqual(['t4', 't5'])
+    expect(pairs).toContainEqual(['t2', 't7'])
+    expect(pairs).toContainEqual(['t3', 't6'])
+  })
+
+  it('the top two seeds can only meet in the final', () => {
+    // Sweep the counts an organizer actually runs, powers of two and not.
+    for (const n of [4, 5, 6, 7, 8, 9, 11, 12, 16, 20]) {
+      const plan = planBracket(ids(n), 'knockout')
+      const a = halfOfFinal(plan, entryFixture(plan, 't1').key)
+      const b = halfOfFinal(plan, entryFixture(plan, 't2').key)
+      expect(`${n}: ${a} vs ${b}`).toBe(`${n}: home vs away`)
+    }
+  })
+
+  it('two bye teams are never drawn against each other', () => {
+    // Six teams: seeds 1-2 get byes, 3-6 contest two play-ins. Pairing the byes
+    // together would waste both byes in the semi-final.
+    const plan = planBracket(ids(6), 'knockout')
+    const semis = plan.fixtures.filter((f) => f.round === 'semi')
+    for (const f of semis) {
+      const bothTeams = f.home.type === 'team' && f.away.type === 'team'
+      expect(bothTeams).toBe(false)
+    }
+  })
+
+  it('eight qualifiers put the group winners in opposite halves', () => {
+    const plan = planBracket(ids(16), 'group_knockout')
+    const seedOf = (k: string) => {
+      const f = plan.fixtures.find((x) => x.key === k)!
+      return [f.home, f.away]
+        .filter((sd): sd is { type: 'qualifier'; seed: number } => sd.type === 'qualifier')
+        .map((sd) => sd.seed)
+    }
+    const firstRound = plan.fixtures.filter((f) =>
+      [f.home, f.away].every((sd) => sd.type === 'qualifier')
+    )
+    const pairs = firstRound.map((f) => seedOf(f.key).sort((x, y) => x - y))
+    expect(pairs).toContainEqual([1, 8])
+    expect(pairs).toContainEqual([4, 5])
+    expect(pairs).toContainEqual([2, 7])
+    expect(pairs).toContainEqual([3, 6])
+  })
+})
