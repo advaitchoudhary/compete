@@ -30,10 +30,28 @@ import { notify } from '../../src/lib/dialog'
 /** Matches BENCH_ALLOWANCE in the backend's registration route. */
 const BENCH_ALLOWANCE = 7
 
+/**
+ * Outfield roles the captain declares. These move ratings — a defender carries a
+ * higher baseline and takes the full clean-sheet share — so the form says so
+ * plainly, and the backend caps how many defenders a squad may name.
+ *
+ * GK is not offered: the referee marks the keeper at match time.
+ */
+type Position = 'DEF' | 'MID' | 'FWD'
+const POSITIONS: Array<{ value: Position; label: string }> = [
+  { value: 'DEF', label: 'DEF' },
+  { value: 'MID', label: 'MID' },
+  { value: 'FWD', label: 'FWD' },
+]
+
+/** Mirrors MAX_DEFENDERS in the backend so the cap is visible before submitting. */
+const MAX_DEFENDERS: Record<string, number> = { '5-a-side': 2, '7-a-side': 3, '11-a-side': 5 }
+const DEFAULT_MAX_DEFENDERS = 3
+
 type Player =
-  | { kind: 'captain'; name: string }
-  | { kind: 'guest'; name: string }
-  | { kind: 'user'; name: string; user_id: string }
+  | { kind: 'captain'; name: string; position?: Position }
+  | { kind: 'guest'; name: string; position?: Position }
+  | { kind: 'user'; name: string; user_id: string; position?: Position }
 
 type Found = { id: string; name: string; username: string | null; city: string | null }
 
@@ -54,6 +72,7 @@ export default function RegisterTeamScreen() {
   const [teamName, setTeamName] = useState('')
   const [query, setQuery] = useState('')
   const [players, setPlayers] = useState<Player[]>([])
+  const [captainPos, setCaptainPos] = useState<Position | undefined>()
 
   // The public endpoint carries everything this form needs (name, a-side format,
   // squad minimum, spots left) and works whether or not the session is fresh.
@@ -73,9 +92,15 @@ export default function RegisterTeamScreen() {
   const minSquad: number = event?.min_squad ?? 5
   const maxSquad = minSquad + BENCH_ALLOWANCE
   // The captain is always in the squad and always counts toward the minimum.
-  const squad: Player[] = [{ kind: 'captain', name: user?.name ?? 'You' }, ...players]
+  const squad: Player[] = [
+    { kind: 'captain', name: user?.name ?? 'You', position: captainPos },
+    ...players,
+  ]
   const short = Math.max(minSquad - squad.length, 0)
   const spotsLeft = event?.max_teams != null ? event.max_teams - (event.teams?.length ?? 0) : null
+  const maxDefenders = MAX_DEFENDERS[event?.match_format as string] ?? DEFAULT_MAX_DEFENDERS
+  const defenderCount = squad.filter(p => p.position === 'DEF').length
+  const tooManyDefenders = defenderCount > maxDefenders
 
   const alreadyAdded = (name: string, userId?: string) =>
     squad.some(p =>
@@ -97,15 +122,27 @@ export default function RegisterTeamScreen() {
 
   const remove = (i: number) => setPlayers(players.filter((_, n) => n !== i))
 
+  /** index 0 is the captain; the rest map onto `players`. */
+  const setPosition = (squadIndex: number, pos: Position) => {
+    if (squadIndex === 0) {
+      setCaptainPos(captainPos === pos ? undefined : pos)
+      return
+    }
+    const i = squadIndex - 1
+    setPlayers(players.map((p, n) => (n === i ? { ...p, position: p.position === pos ? undefined : pos } : p)))
+  }
+
   const { mutate, isPending } = useMutation({
     mutationFn: async () => {
       const res = await api.post(`/events/${id}/register`, {
         team_name: teamName.trim(),
+        ...(captainPos ? { captain_position: captainPos } : {}),
         // The captain is added server-side from the caller's token, so only the
         // other players are sent. Sending the captain too would double-count them.
-        players: players.map(p =>
-          p.kind === 'user' ? { user_id: p.user_id } : { name: p.name }
-        ),
+        players: players.map(p => ({
+          ...(p.kind === 'user' ? { user_id: p.user_id } : { name: p.name }),
+          ...(p.position ? { position: p.position } : {}),
+        })),
       })
       return res.data
     },
@@ -117,7 +154,8 @@ export default function RegisterTeamScreen() {
   })
 
   const canSubmit =
-    teamName.trim().length >= 2 && squad.length >= minSquad && squad.length <= maxSquad && !isPending
+    teamName.trim().length >= 2 && squad.length >= minSquad && squad.length <= maxSquad &&
+    !tooManyDefenders && !isPending
 
   if (isLoading || !event) {
     return <View style={s.fill}><ActivityIndicator color={C.lime} size="large" /></View>
@@ -195,18 +233,63 @@ export default function RegisterTeamScreen() {
           <View style={s.squad}>
             {squad.map((p, i) => (
               <View key={`${p.kind}-${p.name}-${i}`} style={s.playerRow}>
-                <Text style={s.playerNum}>{i + 1}</Text>
-                <Text style={s.playerName} numberOfLines={1}>{p.name}</Text>
-                {p.kind === 'captain' && <Text style={s.captainTag}>CAPTAIN · YOU</Text>}
-                {p.kind === 'user' && <Text style={s.userTag}>ON ALLSPORTS</Text>}
-                {p.kind === 'guest' && <Text style={s.guestTag}>GUEST</Text>}
-                {p.kind !== 'captain' && (
-                  <TouchableOpacity onPress={() => remove(i - 1)} hitSlop={8} activeOpacity={0.6}>
-                    <Text style={s.removeIcon}>✕</Text>
-                  </TouchableOpacity>
-                )}
+                <View style={s.playerTop}>
+                  <Text style={s.playerNum}>{i + 1}</Text>
+                  <Text style={s.playerName} numberOfLines={1}>{p.name}</Text>
+                  {p.kind === 'captain' && <Text style={s.captainTag}>CAPTAIN · YOU</Text>}
+                  {p.kind === 'user' && <Text style={s.userTag}>ON ALLSPORTS</Text>}
+                  {p.kind === 'guest' && <Text style={s.guestTag}>GUEST</Text>}
+                  {p.kind !== 'captain' && (
+                    <TouchableOpacity onPress={() => remove(i - 1)} hitSlop={8} activeOpacity={0.6}>
+                      <Text style={s.removeIcon}>✕</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={s.posRow}>
+                  {POSITIONS.map(op => {
+                    const active = p.position === op.value
+                    // Block a fourth defender rather than letting the backend reject
+                    // the whole registration after they have typed everything in.
+                    const blocked =
+                      op.value === 'DEF' && !active && defenderCount >= maxDefenders
+                    return (
+                      <TouchableOpacity
+                        key={op.value}
+                        style={[
+                          s.posPill,
+                          active && { backgroundColor: C.lime, borderColor: C.lime },
+                          blocked && { opacity: 0.3 },
+                        ]}
+                        disabled={blocked}
+                        onPress={() => setPosition(i, op.value)}
+                        activeOpacity={0.75}
+                      >
+                        <Text style={[s.posPillText, active && { color: C.limeText }]}>
+                          {op.label}
+                        </Text>
+                      </TouchableOpacity>
+                    )
+                  })}
+                  {!p.position && <Text style={s.posHint}>role not set</Text>}
+                </View>
               </View>
             ))}
+          </View>
+
+          {/* Say plainly that this is not cosmetic. */}
+          <View style={s.posNote}>
+            <Text style={s.posNoteTitle}>⚖ Positions affect ratings</Text>
+            <Text style={s.posNoteBody}>
+              Defenders and midfielders earn credit for a clean sheet that forwards
+              don't, so a defender who keeps a 0-0 back rates higher than the stat
+              sheet alone would show. Set these honestly — at most {maxDefenders}{' '}
+              defenders for {event.match_format ?? 'this format'}, and your referee
+              can correct them on match day. Leave a player blank and they're rated
+              on goals and assists only.
+            </Text>
+            <Text style={s.posNoteBody}>
+              The goalkeeper isn't here — your referee marks the keeper at kick-off.
+            </Text>
           </View>
 
           {/* Add players */}
@@ -333,10 +416,25 @@ const s = StyleSheet.create({
 
   squad: { marginTop: SPACE.md, marginHorizontal: SPACE.lg, gap: 3 },
   playerRow: {
-    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm,
-    backgroundColor: C.s1, borderRadius: RADIUS.md, paddingHorizontal: SPACE.md, paddingVertical: 11,
-    borderWidth: 1, borderColor: C.b0,
+    backgroundColor: C.s1, borderRadius: RADIUS.md,
+    paddingHorizontal: SPACE.md, paddingVertical: 10,
+    borderWidth: 1, borderColor: C.b0, gap: 8,
   },
+  playerTop: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
+  posRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  posPill: {
+    paddingHorizontal: 12, paddingVertical: 5, borderRadius: RADIUS.sm,
+    backgroundColor: C.s3, borderWidth: 1, borderColor: C.b1,
+  },
+  posPillText: { color: C.t2, fontSize: 11, fontFamily: FONT.bold, letterSpacing: 0.5 },
+  posHint: { color: C.t3, fontSize: 10, fontFamily: FONT.regular, marginLeft: 2 },
+  posNote: {
+    marginHorizontal: SPACE.lg, marginTop: SPACE.md, padding: SPACE.md, gap: 6,
+    backgroundColor: 'rgba(245,158,11,0.07)', borderRadius: RADIUS.md,
+    borderWidth: 1, borderColor: 'rgba(245,158,11,0.28)',
+  },
+  posNoteTitle: { color: C.amber, fontSize: 12, fontFamily: FONT.bold },
+  posNoteBody: { color: C.t2, fontSize: 12, fontFamily: FONT.regular, lineHeight: 18 },
   playerNum: { color: C.t3, fontSize: 11, fontFamily: FONT.bold, width: 16 },
   playerName: { flex: 1, color: C.t1, fontSize: 14, fontFamily: FONT.semibold },
   captainTag: { color: C.lime, fontSize: 9, fontFamily: FONT.bold, letterSpacing: 0.8 },

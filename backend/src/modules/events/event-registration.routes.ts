@@ -20,10 +20,37 @@ const DEFAULT_MIN_SQUAD = 5
 /** Squad cap = minimum plus a bench. Keeps a roster from being a mailing list. */
 const BENCH_ALLOWANCE = 7
 
+/**
+ * How many of a squad may be declared defenders.
+ *
+ * The captain sets these positions and they move ratings — a defender carries a
+ * higher baseline and takes the full clean-sheet share, worth about three stars
+ * against a forward in a clean-sheet win. Uncapped, the obvious play is to mark
+ * the whole squad DEF and farm it, which is exactly the kind of thing the tier
+ * system exists to prevent.
+ *
+ * The cap is roughly a real back line for the format, so an honest captain never
+ * hits it and a dishonest one cannot inflate more than a real defence would earn.
+ */
+const MAX_DEFENDERS: Record<MatchFormat, number> = {
+  '5-a-side': 2,
+  '7-a-side': 3,
+  '11-a-side': 5,
+}
+const DEFAULT_MAX_DEFENDERS = 3
+
+/**
+ * GK is deliberately not offered. The referee marks the keeper at match time:
+ * it is the largest baseline in the model, keepers swap during a tournament, and
+ * it should not be the captain's to award.
+ */
+const SquadPosition = z.enum(['DEF', 'MID', 'FWD'])
+
 const PlayerEntry = z
   .object({
     user_id: z.string().uuid().optional(),
     name: z.string().min(2).max(80).optional(),
+    position: SquadPosition.nullish(),
   })
   .refine((p) => Boolean(p.user_id) !== Boolean(p.name), {
     message: 'each player needs exactly one of user_id or name',
@@ -32,6 +59,7 @@ const PlayerEntry = z
 const RegisterBody = z.object({
   team_name: z.string().min(2).max(60),
   city: z.string().max(50).optional(),
+  captain_position: SquadPosition.nullish(),
   players: z.array(PlayerEntry).min(1).max(30),
 })
 
@@ -76,7 +104,15 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
     const existingIds = body.data.players
       .filter((p) => p.user_id)
       .map((p) => p.user_id as string)
-    const namedPlayers = body.data.players.filter((p) => p.name).map((p) => p.name as string)
+    const namedEntries = body.data.players.filter((p) => p.name)
+    const namedPlayers = namedEntries.map((p) => p.name as string)
+
+    // Declared position per already-registered player, so it can be written onto
+    // their team_members row below.
+    const positionByUserId = new Map<string, 'DEF' | 'MID' | 'FWD'>()
+    for (const p of body.data.players) {
+      if (p.user_id && p.position) positionByUserId.set(p.user_id, p.position)
+    }
 
     // A captain who also lists themselves shouldn't be counted or inserted twice.
     const otherExistingIds = [...new Set(existingIds)].filter((id) => id !== request.userId)
@@ -91,6 +127,20 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
     if (squadSize > minSquad + BENCH_ALLOWANCE) {
       return reply.code(400).send({
         error: `A squad may have at most ${minSquad + BENCH_ALLOWANCE} players (got ${squadSize})`,
+      })
+    }
+
+    // ── Defender cap ─────────────────────────────────────────────────────────
+    const maxDefenders = event.match_format
+      ? MAX_DEFENDERS[event.match_format]
+      : DEFAULT_MAX_DEFENDERS
+    const declaredDefenders =
+      body.data.players.filter((p) => p.position === 'DEF').length +
+      (body.data.captain_position === 'DEF' ? 1 : 0)
+
+    if (declaredDefenders > maxDefenders) {
+      return reply.code(400).send({
+        error: `A ${event.match_format ?? 'football'} squad may name at most ${maxDefenders} defenders (got ${declaredDefenders}). Defenders earn the clean-sheet bonus, so the number is capped at a realistic back line.`,
       })
     }
 
@@ -172,13 +222,19 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
 
       await trx
         .insertInto('team_members')
-        .values({ team_id: team.id, user_id: request.userId, role: 'captain' })
+        .values({
+          team_id: team.id,
+          user_id: request.userId,
+          role: 'captain',
+          position: body.data.captain_position ?? null,
+        })
         .execute()
 
       // Guests are real users with no credentials, attributed to the captain who
       // entered them. They accumulate ratings and are claimable later (Phase 6).
       const guestIds: string[] = []
-      for (const name of namedPlayers) {
+      for (const entry of namedEntries) {
+        const name = entry.name as string
         const guest = await trx
           .insertInto('users')
           .values({
@@ -192,6 +248,7 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
           .returning('id')
           .executeTakeFirstOrThrow()
         guestIds.push(guest.id)
+        if (entry.position) positionByUserId.set(guest.id, entry.position)
       }
 
       const memberIds = [...otherExistingIds, ...guestIds]
@@ -203,6 +260,7 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
               team_id: team.id,
               user_id: uid,
               role: 'player' as const,
+              position: positionByUserId.get(uid) ?? null,
             }))
           )
           .execute()

@@ -156,6 +156,9 @@ export interface TeamMemberTable {
   team_id: string
   user_id: string
   role: 'captain' | 'vice_captain' | 'player' | 'coach'
+  // Captain-declared outfield role. Feeds match_player_stats.position when the
+  // referee records none — GK stays the referee's call at match time.
+  position: 'DEF' | 'MID' | 'FWD' | null
   jersey_no: number | null
   joined_at: Generated<Date>
   is_active: Generated<boolean>

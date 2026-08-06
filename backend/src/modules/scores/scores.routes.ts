@@ -126,6 +126,24 @@ export async function scoresRoutes(app: FastifyInstance) {
       (a, b) => new Date(a.client_timestamp).getTime() - new Date(b.client_timestamp).getTime()
     )
 
+    // Fall back to the position the captain declared at registration.
+    //
+    // The scorecard only sends a position for the keeper — deliberately, to keep
+    // tournament-day scoring to a few taps — so without this every outfielder
+    // reaches the rating engine positionless and forfeits both the defender
+    // baseline and the clean-sheet share. An explicit position from the referee
+    // always wins: they can see who actually played at the back.
+    const declared = await db
+      .selectFrom('team_members')
+      .select(['user_id', 'team_id', 'position'])
+      .where('team_id', 'in', [...new Set(sorted.map((e) => e.team_id))])
+      .where('position', 'is not', null)
+      .execute()
+
+    const declaredByPlayer = new Map(
+      declared.map((d) => [`${d.team_id}:${d.user_id}`, d.position as string])
+    )
+
     // Upsert all entries — deduplicated by client_event_id
     const results = await db
       .insertInto('match_player_stats')
@@ -136,7 +154,8 @@ export async function scoresRoutes(app: FastifyInstance) {
           team_id: entry.team_id,
           sport_id: match.sport_id,
           stats: JSON.stringify(entry.stats) as unknown as Record<string, unknown>,
-          position: entry.position ?? null,
+          position:
+            entry.position ?? declaredByPlayer.get(`${entry.team_id}:${entry.user_id}`) ?? null,
           entered_by: request.userId,
           client_event_id: entry.client_event_id,
         }))

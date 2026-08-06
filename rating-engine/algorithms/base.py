@@ -49,15 +49,18 @@ MIDFIELD_CLEAN_SHEET_BONUS = 1.0  # smaller share for midfielders (they help def
 
 # Star rating starts from a position baseline ("you did your job"), then
 # performance is added. GK 5, defenders 4, everyone else 3.
+# DEF/MID/FWD are the coarse roles a captain declares at registration; the
+# specific ones are accepted too for anything that records them.
 POSITION_BASELINE = {
     "GK": 5.0,
+    "DEF": 4.0,
     "CB": 4.0, "LB": 4.0, "RB": 4.0, "CDM": 4.0,
 }
 DEFAULT_BASELINE = 3.0
 
 # Clean-sheet reward tiers: back line gets the full bonus, midfield a share.
-BACKLINE_POSITIONS = frozenset({"CB", "LB", "RB"})
-MIDFIELD_POSITIONS = frozenset({"CDM", "CM", "CAM"})
+BACKLINE_POSITIONS = frozenset({"DEF", "CB", "LB", "RB"})
+MIDFIELD_POSITIONS = frozenset({"MID", "CDM", "CM", "CAM"})
 
 # Overall-blend tier weights (higher tier counts more)
 TIER_WEIGHT = {"amateur": 1.0, "semi_pro": 1.5, "pro": 2.0, "legends": 3.0}
