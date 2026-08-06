@@ -27,6 +27,7 @@ from algorithms.base import (
     WIN_BONUS,
     CLEAN_SHEET_BONUS,
     MIDFIELD_CLEAN_SHEET_BONUS,
+    GK_CLEAN_SHEET_BONUS,
 )
 from algorithms import preprocess_stats
 
@@ -334,3 +335,32 @@ class TestOutfieldersAreNotMistakenForKeepers:
         # Keeper baseline (5) + saves + clean sheet clears any outfield line.
         assert explicit > compute_star_rating({"goals": 0, "assists": 0, "saves": 0},
                                               FOOTBALL_SCHEMA, None, False, True)
+
+
+class TestKeeperIsAccountableForGoalsLetIn:
+    """
+    No scorecard records goals_conceded per player, so a keeper's stat line is
+    just saves. The team's score is passed in separately; without it a keeper who
+    let in four rated the same as one who let in none.
+    """
+
+    def test_conceding_costs_the_keeper(self):
+        beaten = compute_star_rating({"saves": 2}, FOOTBALL_SCHEMA, "GK", False, False, conceded=4)
+        untroubled = compute_star_rating({"saves": 2}, FOOTBALL_SCHEMA, "GK", False, False, conceded=0)
+        assert beaten < untroubled
+
+    def test_more_goals_conceded_is_worse(self):
+        one = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=1)
+        four = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=4)
+        assert four < one
+
+    def test_conceded_zero_still_counts_as_a_clean_sheet(self):
+        shut_out = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=0)
+        leaked = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=1)
+        assert shut_out - leaked >= GK_CLEAN_SHEET_BONUS - ROUNDING_TOLERANCE
+
+    def test_omitting_conceded_keeps_the_old_behaviour(self):
+        # Callers that do not know the score still work off the stat line.
+        assert compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK") == pytest.approx(
+            compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK"), abs=1e-9
+        )

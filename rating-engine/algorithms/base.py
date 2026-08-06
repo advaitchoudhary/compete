@@ -147,6 +147,7 @@ def compute_star_rating(
     position: str | None = None,
     won: bool = False,
     clean_sheet: bool = False,
+    conceded: float | None = None,
 ) -> float:
     """
     0–10 'man of the match' star — the flat, referee-approvable rating.
@@ -154,18 +155,28 @@ def compute_star_rating(
     + CLEAN_SHEET_BONUS for the keeper & back line, + flat WIN_BONUS for the
     winning team. This star is what later feeds Elo (via the nudge).
 
-    clean_sheet is a team-level fact (the player's team conceded 0).
+    clean_sheet is a team-level fact (the player's team conceded 0). `conceded`
+    is the goals the player's team let in — also team-level, and passed in rather
+    than read from the stat line because no scorecard records goals_conceded per
+    player. Without it a keeper who let in four still scored as though he had let
+    in none. It is a parameter, not an injected stat, because writing
+    goals_conceded into the stats dict would make every outfielder on a losing
+    team look like a keeper again.
     """
     pos = (position or "").upper()
 
     # Goalkeeper — baseline 5, shaped by saves / clean sheet / goals conceded.
     if pos == "GK" or (pos == "" and looks_like_keeper(player_stats)):
         saves = float(player_stats.get("saves", 0) or 0)
-        conceded = float(player_stats.get("goals_conceded", 0) or 0)
-        gk_clean = clean_sheet or bool(player_stats.get("clean_sheet")) or (
-            "goals_conceded" in player_stats and conceded == 0
+        let_in = (
+            float(conceded)
+            if conceded is not None
+            else float(player_stats.get("goals_conceded", 0) or 0)
         )
-        star = POSITION_BASELINE["GK"] + min(saves * 0.3, 3.0) - min(conceded * 0.5, 3.0)
+        gk_clean = clean_sheet or bool(player_stats.get("clean_sheet")) or (
+            conceded is not None and let_in == 0
+        ) or ("goals_conceded" in player_stats and let_in == 0)
+        star = POSITION_BASELINE["GK"] + min(saves * 0.3, 3.0) - min(let_in * 0.5, 3.0)
         if gk_clean:
             star += GK_CLEAN_SHEET_BONUS
     else:
