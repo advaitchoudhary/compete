@@ -282,3 +282,55 @@ class TestMatchWeight:
         # A win must still gain and a loss must still drop, however short.
         assert elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(12)) > 0
         assert elo_delta(50.0, 50.0, 0.0, 10, 1.0, 5.0, match_weight(12)) < 0
+
+
+class TestOutfieldersAreNotMistakenForKeepers:
+    """
+    Regression: the tournament scorecard submits a complete stat line for every
+    player — {"goals": 0, "assists": 0, "saves": 0} — and the keeper heuristic
+    used to test whether the `saves` KEY was present rather than whether its
+    value was non-zero. Every outfielder was therefore scored on the goalkeeper
+    branch, which never reads goals or assists.
+
+    Live consequence, seen in a real 4-0: every winner scored exactly 9.0 and
+    every loser exactly 5.0, whatever they did.
+    """
+
+    def _line(self, **kw):
+        # A full stat line, zeros included — exactly what the scorecard sends.
+        return {"goals": 0, "assists": 0, "saves": 0, **kw}
+
+    def test_a_zeroed_saves_key_does_not_make_a_keeper(self):
+        scorer = compute_star_rating(self._line(goals=1), FOOTBALL_SCHEMA, None, True, True)
+        anon = compute_star_rating(self._line(), FOOTBALL_SCHEMA, None, True, True)
+        assert scorer > anon, "a goalscorer must outrate a team-mate who did nothing"
+
+    def test_goals_and_assists_both_move_the_star(self):
+        base = compute_star_rating(self._line(), FOOTBALL_SCHEMA, None, True, True)
+        goal = compute_star_rating(self._line(goals=1), FOOTBALL_SCHEMA, None, True, True)
+        both = compute_star_rating(self._line(goals=1, assists=1), FOOTBALL_SCHEMA, None, True, True)
+        assert base < goal < both
+
+    def test_winners_on_a_clean_sheet_are_not_all_identical(self):
+        squad = [
+            compute_star_rating(self._line(goals=g, assists=a), FOOTBALL_SCHEMA, None, True, True)
+            for g, a in [(0, 0), (1, 0), (1, 1), (2, 0)]
+        ]
+        assert len(set(squad)) > 1, f"whole squad collapsed onto one value: {squad}"
+
+    def test_losers_are_not_all_identical_either(self):
+        squad = [
+            compute_star_rating(self._line(goals=g, assists=a), FOOTBALL_SCHEMA, None, False, False)
+            for g, a in [(0, 0), (0, 1), (1, 0)]
+        ]
+        assert len(set(squad)) > 1, f"whole squad collapsed onto one value: {squad}"
+
+    def test_a_real_keeper_is_still_scored_as_one(self):
+        # Explicit position always wins, and an unpositioned player with actual
+        # saves is still inferred to be the keeper.
+        explicit = compute_star_rating({"saves": 4}, FOOTBALL_SCHEMA, "GK", False, True)
+        inferred = compute_star_rating({"saves": 4}, FOOTBALL_SCHEMA, None, False, True)
+        assert explicit == inferred
+        # Keeper baseline (5) + saves + clean sheet clears any outfield line.
+        assert explicit > compute_star_rating({"goals": 0, "assists": 0, "saves": 0},
+                                              FOOTBALL_SCHEMA, None, False, True)

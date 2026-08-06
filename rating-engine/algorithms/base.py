@@ -120,6 +120,27 @@ def mov_multiplier(margin: float) -> float:
 GK_STATS = ("saves", "goals_conceded", "clean_sheet")
 
 
+def looks_like_keeper(player_stats: dict[str, Any]) -> bool:
+    """
+    Infer a goalkeeper from the stat line when no position was recorded.
+
+    Must test the VALUES, not the keys. The tournament scorecard submits a full
+    stat line for every player — `{"goals": 0, "assists": 0, "saves": 0}` — so a
+    key-presence check treated every outfielder as a keeper. They were then scored
+    on the GK branch, where goals and assists are not read at all: every winner on
+    a clean sheet came out at exactly 9.0 and every loser at exactly 5.0,
+    regardless of what they did.
+
+    `clean_sheet` is deliberately not a signal here. It is a team-level fact and
+    football's schema awards it to outfielders too, so it says nothing about
+    whether this player kept goal.
+    """
+    return (
+        float(player_stats.get("saves", 0) or 0) > 0
+        or float(player_stats.get("goals_conceded", 0) or 0) > 0
+    )
+
+
 def compute_star_rating(
     player_stats: dict[str, Any],
     sport_schema: dict[str, Any],
@@ -138,7 +159,7 @@ def compute_star_rating(
     pos = (position or "").upper()
 
     # Goalkeeper — baseline 5, shaped by saves / clean sheet / goals conceded.
-    if pos == "GK" or (pos == "" and any(k in player_stats for k in GK_STATS)):
+    if pos == "GK" or (pos == "" and looks_like_keeper(player_stats)):
         saves = float(player_stats.get("saves", 0) or 0)
         conceded = float(player_stats.get("goals_conceded", 0) or 0)
         gk_clean = clean_sheet or bool(player_stats.get("clean_sheet")) or (
