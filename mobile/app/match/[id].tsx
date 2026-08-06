@@ -93,8 +93,36 @@ const sc = StyleSheet.create({
 const DEFAULT_AVATAR = (name?: string) =>
   `https://ui-avatars.com/api/?background=1f2937&color=fff&bold=true&name=${encodeURIComponent(name || 'Player')}`
 
+/**
+ * Colour per stat so a contribution is visible at a glance. A referee scanning
+ * fourteen rows should not have to read "0 goals" and "1 goals" to tell them
+ * apart — they were previously the same dim grey chip.
+ */
+const STAT_COLOR: Record<string, string> = {
+  goals: C.lime,
+  assists: C.blue,
+  saves: C.amber,
+  clean_sheet: C.green,
+  tackles: C.indigo,
+  interceptions: C.indigo,
+  shots_on_target: C.purple,
+}
+
+/** "1 goals" reads like a bug. Only touches the plain trailing -s. */
+const statLabel = (key: string, value: unknown) => {
+  const words = key.replace(/_/g, ' ')
+  return Number(value) === 1 && words.endsWith('s') ? words.slice(0, -1) : words
+}
+
+const isContribution = (v: unknown) => v === true || (typeof v === 'number' && v > 0)
+
 function PlayerStatRow({ stat, sportColor }: { stat: any; sportColor: string }) {
-  const keys = Object.keys(stat.stats ?? {}).slice(0, 4)
+  const stats: Record<string, unknown> = stat.stats ?? {}
+  // Non-zero first, so the four we show are the four that say something. Sorting
+  // after slicing would have let a lone goal fall off the end of a long stat line.
+  const keys = Object.keys(stats)
+    .sort((a, b) => Number(isContribution(stats[b])) - Number(isContribution(stats[a])))
+    .slice(0, 4)
   const avatarUri = stat.avatar_url || DEFAULT_AVATAR(stat.name)
 
   return (
@@ -104,11 +132,21 @@ function PlayerStatRow({ stat, sportColor }: { stat: any; sportColor: string }) 
         <Text style={ps.name}>{stat.name ?? '—'}</Text>
         {keys.length > 0 && (
           <View style={ps.statChips}>
-            {keys.map(k => (
-              <View key={k} style={ps.chip}>
-                <Text style={ps.chipText}>{stat.stats[k]} {k.replace(/_/g, ' ')}</Text>
-              </View>
-            ))}
+            {keys.map(k => {
+              const value = stats[k]
+              const on = isContribution(value)
+              const color = STAT_COLOR[k] ?? C.lime
+              return (
+                <View
+                  key={k}
+                  style={[ps.chip, on && { backgroundColor: color + '22', borderColor: color + '66' }]}
+                >
+                  <Text style={[ps.chipText, on && { color, fontWeight: '800' }]}>
+                    {value === true ? '' : `${value} `}{statLabel(k, value)}
+                  </Text>
+                </View>
+              )
+            })}
           </View>
         )}
       </View>
@@ -127,7 +165,8 @@ const ps = StyleSheet.create({
   info:     { flex: 1, gap: 4 },
   name:     { color: C.t1, fontSize: 14, fontWeight: '600' },
   statChips:{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  chip:     { backgroundColor: C.s3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 },
+  chip:     { backgroundColor: C.s3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2,
+              borderWidth: 1, borderColor: 'transparent' },
   chipText: { color: C.t3, fontSize: 10, fontWeight: '600' },
   rating:   { fontSize: 20, fontWeight: '900', letterSpacing: -0.5 },
 })
