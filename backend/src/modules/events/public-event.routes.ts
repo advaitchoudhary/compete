@@ -4,6 +4,7 @@ import { getDb } from '../../shared/db/client'
 import type { FixtureSource } from '../../shared/db/types'
 import { rankStandings } from './bracket/standings'
 import { fixtureLabel, roundLabel } from './bracket/round-label'
+import { goalsOf } from './score'
 import { MIN_SQUAD } from './event-registration.routes'
 
 /**
@@ -25,13 +26,6 @@ const HIDDEN_STATUSES = new Set(['cancelled'])
 
 /** Rate limit for the public page: generous for a crowd, bounded for a scraper. */
 const PUBLIC_RATE_LIMIT = { max: 240, timeWindow: '1 minute' }
-
-const goalsOf = (score: unknown): number | null => {
-  if (!score || typeof score !== 'object') return null
-  const v = (score as Record<string, unknown>).goals
-  if (v === undefined || v === null) return null
-  return Number(v) || 0
-}
 
 export async function publicEventRoutes(app: FastifyInstance) {
   /**

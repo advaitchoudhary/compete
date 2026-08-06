@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
 import type { EventStatus } from '../../shared/db/types'
+import { roundLabel } from './bracket/round-label'
+import { goalsOf } from './score'
 
 const CreateEventBody = z.object({
   name: z.string().min(3).max(100),
@@ -163,16 +165,36 @@ export async function eventsRoutes(app: FastifyInstance) {
       .orderBy('et.seed', 'asc')
       .execute()
 
-    // Recent matches
-    const matches = await db
+    // Recent matches.
+    //
+    // Team names are joined in because without them the tournament screen had
+    // nothing to render but two blanks — it expected home_team_name/away_team_name
+    // and this endpoint never sent either.
+    const matchRows = await db
       .selectFrom('matches as m')
+      .leftJoin('teams as ht', 'ht.id', 'm.home_team_id')
+      .leftJoin('teams as at', 'at.id', 'm.away_team_id')
       .select([
         'm.id', 'm.round', 'm.status', 'm.scheduled_at', 'm.home_score', 'm.away_score',
         'm.home_team_id', 'm.away_team_id', 'm.winner_team_id',
+        'ht.name as home_team_name', 'at.name as away_team_name',
       ])
       .where('m.event_id', '=', id)
       .orderBy('m.scheduled_at', 'asc')
       .execute()
+
+    const matches = matchRows.map((m) => {
+      // Publish plain numbers and drop the raw jsonb. Sending `home_score` as
+      // `{ goals: 2 }` under a name that reads like a number is what produced
+      // "[object Object] — [object Object]" on the tournament screen.
+      const { home_score, away_score, ...rest } = m
+      return {
+        ...rest,
+        round_label: m.round ? roundLabel(m.round) : null,
+        home_goals: goalsOf(home_score),
+        away_goals: goalsOf(away_score),
+      }
+    })
 
     return { ...event, teams, matches }
   })

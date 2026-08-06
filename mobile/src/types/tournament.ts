@@ -48,13 +48,20 @@ export interface EventDetail extends EventSummary {
 export interface MatchSummary {
   id: string
   home_team_id: string
-  home_team_name: string
+  home_team_name: string | null
   away_team_id: string
-  away_team_name: string
-  home_score: number | null
-  away_score: number | null
+  away_team_name: string | null
+  /**
+   * Goals as plain numbers. The DB column is jsonb (`{ "goals": 2 }`) and this
+   * type used to declare `home_score: number`, so interpolating it rendered
+   * "[object Object]". The API now resolves the jsonb and sends numbers.
+   */
+  home_goals: number | null
+  away_goals: number | null
   status: 'scheduled' | 'live' | 'completed' | 'cancelled'
   round: string | null
+  /** Human form of `round` — "Semi-final", not "semi". */
+  round_label: string | null
   scheduled_at: string | null
   event_id: string | null
   sport_slug: string
@@ -71,7 +78,33 @@ export interface PlayerStatEntry {
   confirmed_by_captain: boolean
 }
 
-export interface MatchDetail extends MatchSummary {
+/**
+ * GET /matches/:id — a DIFFERENT payload from the match rows inside
+ * GET /events/:id, so it deliberately does not extend MatchSummary.
+ *
+ * Here the scores are the raw jsonb the column stores (`{ goals: 2 }`) and are
+ * read through scoreNum(); the event endpoint resolves them to numbers instead.
+ * Inheriting one from the other made those two shapes look identical and hid a
+ * real mismatch.
+ */
+export interface MatchDetail {
+  id: string
+  home_team_id: string
+  home_team_name: string
+  away_team_id: string
+  away_team_name: string
+  home_team_avatar: string | null
+  away_team_avatar: string | null
+  /** Raw jsonb, e.g. `{ goals: 2 }` — not a number. */
+  home_score: Record<string, number> | null
+  away_score: Record<string, number> | null
+  status: 'scheduled' | 'live' | 'completed' | 'cancelled'
+  round: string | null
+  scheduled_at: string | null
+  event_id: string | null
+  sport_slug: string
+  sport_name: string
+  venue: string | null
   started_at: string | null
   completed_at: string | null
   home_confirmed: boolean

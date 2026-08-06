@@ -31,7 +31,7 @@ const MATCH_STATUS_CFG: Record<string, { label: string; color: string; bg: strin
 
 function TournamentMatchRow({ match, onPress }: { match: MatchSummary; onPress: () => void }) {
   const stCfg = MATCH_STATUS_CFG[match.status] ?? MATCH_STATUS_CFG.scheduled
-  const hasScore = match.home_score != null || match.away_score != null
+  const hasScore = match.home_goals != null || match.away_goals != null
 
   return (
     <TouchableOpacity style={mr.row} onPress={onPress} activeOpacity={0.78}>
@@ -39,14 +39,14 @@ function TournamentMatchRow({ match, onPress }: { match: MatchSummary; onPress: 
         <Text style={[mr.badgeText, { color: stCfg.color }]}>{stCfg.label}</Text>
       </View>
       <View style={mr.teams}>
-        <Text style={mr.teamName} numberOfLines={1}>{match.home_team_name}</Text>
+        <Text style={mr.teamName} numberOfLines={1}>{match.home_team_name ?? 'TBC'}</Text>
         <Text style={mr.scoreOrVs}>
           {hasScore
-            ? `${match.home_score ?? 0} — ${match.away_score ?? 0}`
+            ? `${match.home_goals ?? 0} — ${match.away_goals ?? 0}`
             : 'vs'}
         </Text>
         <Text style={[mr.teamName, { textAlign: 'right' }]} numberOfLines={1}>
-          {match.away_team_name}
+          {match.away_team_name ?? 'TBC'}
         </Text>
       </View>
       {match.scheduled_at && (
@@ -139,7 +139,7 @@ export default function TournamentDetailScreen() {
   // Group matches by round
   const byRound = useMemo(() => {
     return matches.reduce((acc, m) => {
-      const key = m.round ?? 'General'
+      const key = m.round_label ?? m.round ?? 'General'
       ;(acc[key] = acc[key] ?? []).push(m)
       return acc
     }, {} as Record<string, MatchSummary[]>)
