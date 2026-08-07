@@ -212,3 +212,28 @@ All four steps below are **implemented**:
 - Add Postgres connection pooling (§4) before raising backend instance count.
 - Verify end-to-end: complete a match → `XADD` → consumer processes → rating
   update reaches a client on the *other* realtime instance exactly once.
+
+## Before pointing a released build at a project
+
+Firebase configuration that is harmless in development is dangerous in production,
+and none of it is visible from a working app — the app behaves identically either
+way. Run the check rather than trusting memory:
+
+```
+firebase_check_production_readiness { "project_id": "allsports-prod" }
+```
+
+It flags:
+
+- **Test phone numbers.** These never send an SMS and always accept a fixed code.
+  In a live project that is a permanent bypass of phone verification for anyone
+  holding — or guessing — that number. `allsports-prod` currently has five,
+  registered deliberately for development. **They must be cleared before real
+  users.** Clear them by calling `firebase_enable_phone_auth` with an empty
+  `test_numbers` object.
+- **Anonymous sign-in**, if it ever gets switched on.
+- **`localhost` as an authorised domain.**
+
+Also confirm `EXPO_PUBLIC_FIREBASE_DISABLE_APP_VERIFICATION` is absent from the
+production environment. It is already double-gated behind `__DEV__`, so a release
+build ignores it, but it has no business in a prod env file.

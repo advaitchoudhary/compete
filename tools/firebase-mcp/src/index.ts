@@ -253,6 +253,60 @@ server.registerTool(
     )
 )
 
+// ── Launch readiness ────────────────────────────────────────────────────────
+server.registerTool(
+  'firebase_check_production_readiness',
+  {
+    title: 'Check a project is safe to launch on',
+    description:
+      'Flag configuration that is fine during development but must not survive to ' +
+      'real users. Run this before pointing a released build at a project — the ' +
+      'problems it looks for are invisible from a working app.',
+    inputSchema: { project_id: z.string().describe('Project id to audit') },
+  },
+  async ({ project_id }) =>
+    text(
+      String(
+        await guard(async () => {
+          const cfg = await api<{
+            signIn?: {
+              phoneNumber?: { enabled?: boolean; testPhoneNumbers?: Record<string, string> }
+              anonymous?: { enabled?: boolean }
+            }
+            authorizedDomains?: string[]
+          }>('GET', `https://identitytoolkit.googleapis.com/admin/v2/projects/${project_id}/config`)
+
+          const problems: string[] = []
+
+          // The one that matters: a test number never receives an SMS and always
+          // accepts its fixed code. In a live project that is a permanent bypass
+          // of phone verification for whoever holds — or guesses — that number.
+          const tests = Object.keys(cfg.signIn?.phoneNumber?.testPhoneNumbers ?? {})
+          if (tests.length > 0) {
+            problems.push(
+              `${tests.length} test phone number(s) still registered: ${tests.join(', ')}.\n` +
+                '   These bypass SMS entirely and accept a fixed code. Remove before real users.'
+            )
+          }
+
+          if (cfg.signIn?.anonymous?.enabled) {
+            problems.push('Anonymous sign-in is enabled — unauthenticated accounts can be created at will.')
+          }
+
+          const localhosts = (cfg.authorizedDomains ?? []).filter((d) => d === 'localhost')
+          if (localhosts.length > 0) {
+            problems.push('`localhost` is an authorised domain — fine for development, drop it for production.')
+          }
+
+          if (problems.length === 0) return `${project_id}: nothing flagged.`
+          return `${project_id} is NOT ready for real users:\n\n` +
+            problems.map((p) => ` • ${p}`).join('\n') +
+            '\n\nClear test numbers with firebase_enable_phone_auth and an empty test_numbers object.'
+        })
+      )
+    )
+)
+
 // ── Service account key ─────────────────────────────────────────────────────
 server.registerTool(
   'firebase_create_service_account_key',
