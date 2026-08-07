@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "firebase-admin": {
+      "command": "node",
+      "args": ["tools/firebase-mcp/dist/index.js"]
+    }
+  }
+}
