@@ -38,6 +38,33 @@ export default function AuthScreen() {
   const [pending, setPending] = useState<PendingVerification | null>(null)
   const [code, setCode] = useState('')
 
+  // Set when the phone is verified but no account exists yet. The ID token is
+  // held so the name can be collected and the same token re-submitted — Firebase
+  // tokens are not single-use, and re-verifying would mean a second SMS.
+  const [signupToken, setSignupToken] = useState<string | null>(null)
+  const [signupName, setSignupName] = useState('')
+
+  /** Exchange a verified Firebase token for a session, or ask for a name first. */
+  const finishSignIn = async (idToken: string, name?: string) => {
+    try {
+      const res = await api.post('/auth/verify', {
+        firebase_id_token: idToken,
+        ...(name ? { name } : {}),
+      })
+      setAuth(res.data.access_token, res.data.user)
+      router.replace('/(tabs)')
+      return
+    } catch (e: any) {
+      // Branch on the code, never the prose.
+      if (e?.response?.data?.code === 'NAME_REQUIRED') {
+        setSignupToken(idToken)
+        return
+      }
+      const server = e?.response?.data?.error
+      notify('Could not sign in', typeof server === 'string' ? server : phoneAuthMessage(e))
+    }
+  }
+
   const requestOtp = async () => {
     setBusy('otp')
     try {
@@ -56,12 +83,20 @@ export default function AuthScreen() {
       const idToken = await pending.confirm(code.trim())
       // The backend resolves this to the existing account by verified phone, so a
       // seeded organizer signing in here lands on their own profile, not a new one.
-      const res = await api.post('/auth/verify', { firebase_id_token: idToken })
-      setAuth(res.data.access_token, res.data.user)
-      router.replace('/(tabs)')
+      // A number with no account comes back asking for a name.
+      await finishSignIn(idToken)
     } catch (e: any) {
-      const server = e?.response?.data?.error
-      notify('Could not sign in', typeof server === 'string' ? server : phoneAuthMessage(e))
+      notify('Could not sign in', phoneAuthMessage(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const completeSignup = async () => {
+    if (!signupToken) return
+    setBusy('signup')
+    try {
+      await finishSignIn(signupToken, signupName.trim())
     } finally {
       setBusy(null)
     }
@@ -113,7 +148,43 @@ export default function AuthScreen() {
           />
         </View>
 
-        {!pending ? (
+        {signupToken ? (
+          /* First sign-in from this number: the phone is already verified, we just
+             need something to call them. Kept as its own step rather than asked up
+             front, so a returning user never sees it. */
+          <>
+            <View style={s.welcomeBox}>
+              <Text style={s.welcomeTitle}>Welcome to AllSports</Text>
+              <Text style={s.welcomeBody}>
+                {toE164(phone)} is verified. What should we call you?
+              </Text>
+            </View>
+            <Text style={s.label}>YOUR NAME</Text>
+            <TextInput
+              style={s.phoneInput}
+              placeholder="e.g. Advait Choudhary"
+              placeholderTextColor={C.t3}
+              value={signupName}
+              onChangeText={setSignupName}
+              maxLength={80}
+              autoFocus
+              autoCapitalize="words"
+            />
+            <TouchableOpacity
+              style={[s.btnPrimary, signupName.trim().length < 2 && { opacity: 0.35 }]}
+              disabled={signupName.trim().length < 2 || !!busy}
+              onPress={completeSignup}
+              activeOpacity={0.85}
+            >
+              {busy === 'signup'
+                ? <ActivityIndicator color={C.limeText} />
+                : <Text style={s.btnPrimaryText}>Create my profile</Text>}
+            </TouchableOpacity>
+            <Text style={s.hintText}>
+              Teammates will see this name on scorecards and the leaderboard.
+            </Text>
+          </>
+        ) : !pending ? (
           <TouchableOpacity
             style={[s.btnPrimary, (phone.length < 10 || !isPhoneAuthSupported) && { opacity: 0.35 }]}
             disabled={phone.length < 10 || !!busy || !isPhoneAuthSupported}
@@ -238,6 +309,13 @@ const s = StyleSheet.create({
     ...(({ outlineStyle: 'none' }) as object),
   },
   changeNumber: { color: C.t2, fontSize: 13, fontFamily: FONT.semibold, textAlign: 'center', paddingVertical: 6 },
+  welcomeBox: {
+    backgroundColor: C.limeGlow, borderRadius: RADIUS.md, borderWidth: 1, borderColor: C.lime,
+    padding: SPACE.md, gap: 4,
+  },
+  welcomeTitle: { color: C.lime, fontSize: 15, fontFamily: FONT.bold },
+  welcomeBody: { color: C.t2, fontSize: 12, fontFamily: FONT.regular, lineHeight: 18 },
+  hintText: { color: C.t3, fontSize: 11, fontFamily: FONT.regular, textAlign: 'center' },
 
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: SPACE.sm },
   dividerLine: { flex: 1, height: 1, backgroundColor: C.b1 },

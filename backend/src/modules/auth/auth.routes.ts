@@ -166,7 +166,15 @@ export async function authRoutes(app: FastifyInstance) {
 
     if (!user) {
       if (!name) {
-        return reply.code(400).send({ error: 'name is required for new users' })
+        // The client cannot know this is a first sign-in until it asks — there is
+        // deliberately no "does this number exist" endpoint, since that would let
+        // anyone enumerate who is registered. So the answer comes back here, with
+        // a stable code rather than a message: the sign-in screen branches on it
+        // to collect a name, and prose is free to change without breaking it.
+        return reply.code(400).send({
+          error: 'name is required for new users',
+          code: 'NAME_REQUIRED',
+        })
       }
       user = await db
         .insertInto('users')
