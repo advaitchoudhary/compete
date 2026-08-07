@@ -21,6 +21,7 @@ import {
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { BASE_URL, setToken, saveUser } from '../src/api/client'
+import { sendOtp, phoneAuthMessage, type PendingVerification } from '../src/lib/phone-auth'
 import { C, FONT, SPACE, RADIUS, ELEV } from '../src/theme'
 
 type State = 'ready' | 'claiming' | 'done' | 'error'
@@ -30,6 +31,11 @@ export default function ClaimPage() {
   const router = useRouter()
 
   const [name, setName] = useState('')
+  // Claiming now requires proving who you are, not just holding the link — the
+  // verified phone becomes the credential that lets this person come back.
+  const [phone, setPhone] = useState('')
+  const [code, setCode] = useState('')
+  const [pending, setPending] = useState<PendingVerification | null>(null)
   const [state, setState] = useState<State>('ready')
   const [error, setError] = useState<string | null>(null)
   const [claimedName, setClaimedName] = useState('')
@@ -41,14 +47,32 @@ export default function ClaimPage() {
     }
   }, [token])
 
-  const claim = async () => {
+  const requestOtp = async () => {
     setState('claiming')
     setError(null)
     try {
+      setPending(await sendOtp(phone))
+      setState('ready')
+    } catch (e) {
+      setState('ready')
+      setError(phoneAuthMessage(e))
+    }
+  }
+
+  const claim = async () => {
+    if (!pending) return
+    setState('claiming')
+    setError(null)
+    try {
+      const idToken = await pending.confirm(code.trim())
       const res = await fetch(`${BASE_URL}/auth/claim`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, ...(name.trim() ? { name: name.trim() } : {}) }),
+        body: JSON.stringify({
+          token,
+          firebase_id_token: idToken,
+          ...(name.trim() ? { name: name.trim() } : {}),
+        }),
       })
       const body = await res.json()
 
@@ -63,9 +87,9 @@ export default function ClaimPage() {
       saveUser(body.user)
       setClaimedName(body.user.name)
       setState('done')
-    } catch {
-      setState('error')
-      setError('Could not reach the server. Check your connection.')
+    } catch (e) {
+      setState('ready')
+      setError(phoneAuthMessage(e))
     }
   }
 
@@ -122,21 +146,63 @@ export default function ClaimPage() {
           autoCapitalize="words"
         />
 
+        {/* Verifying a number is what turns this into an account you can come back
+            to. Without it the profile would be yours only until the session ran
+            out, and the link is already spent. */}
+        <Text style={s.label}>YOUR MOBILE NUMBER</Text>
+        <TextInput
+          style={s.input}
+          value={phone}
+          onChangeText={(v) => { setPhone(v); setPending(null); setCode('') }}
+          placeholder="98765 43210"
+          placeholderTextColor={C.t3}
+          keyboardType="phone-pad"
+          maxLength={10}
+          editable={!pending}
+        />
+
+        {pending && (
+          <>
+            <Text style={s.label}>THE 6-DIGIT CODE WE SENT</Text>
+            <TextInput
+              style={[s.input, { fontSize: 22, letterSpacing: 10, textAlign: 'center' }]}
+              value={code}
+              onChangeText={setCode}
+              placeholder="––––––"
+              placeholderTextColor={C.t3}
+              keyboardType="number-pad"
+              maxLength={6}
+              autoFocus
+            />
+          </>
+        )}
+
+        {error && <Text style={s.inlineError}>{error}</Text>}
+
         <TouchableOpacity
-          style={[s.primary, state === 'claiming' && { opacity: 0.5 }]}
-          onPress={claim}
-          disabled={state === 'claiming'}
+          style={[
+            s.primary,
+            (state === 'claiming' || (!pending && phone.length < 10) || (pending && code.length < 6)) &&
+              { opacity: 0.5 },
+          ]}
+          onPress={pending ? claim : requestOtp}
+          disabled={
+            state === 'claiming' || (!pending ? phone.length < 10 : code.length < 6)
+          }
           activeOpacity={0.85}
         >
           {state === 'claiming' ? (
             <ActivityIndicator color={C.limeText} />
           ) : (
-            <Text style={s.primaryText}>Claim my profile</Text>
+            <Text style={s.primaryText}>
+              {pending ? 'Verify & claim my profile' : 'Send me a code'}
+            </Text>
           )}
         </TouchableOpacity>
 
         <Text style={s.fine}>
-          This link works once. Anyone with it can claim this profile, so keep it to yourself.
+          The link says which profile; the code proves it is you. Your number becomes how
+          you sign in from now on.
         </Text>
       </View>
     </View>
@@ -201,6 +267,7 @@ const s = StyleSheet.create({
     ...ELEV.glow(C.lime, 0.3),
   },
   primaryText: { color: C.limeText, fontSize: 15, fontFamily: FONT.bold },
+  inlineError: { color: C.amber, fontSize: 12, lineHeight: 18 },
   fine: {
     color: C.t3,
     fontSize: 11,

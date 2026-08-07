@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
-import { issueJwt } from '../auth/auth.service'
+import { issueJwt, verifyFirebaseToken } from '../auth/auth.service'
 
 /**
  * Guest claiming — turning a name someone typed into an owned profile.
@@ -16,6 +16,11 @@ import { issueJwt } from '../auth/auth.service'
  * Delivery is a link the captain shares from their own phone over WhatsApp — a
  * guest has no app, so push can't reach them, and server-sent SMS would mean
  * gateway cost and DLT registration in India before there is a paying customer.
+ *
+ * Claiming requires TWO proofs: the link says which profile, and a phone sign-in
+ * says who is taking it. The link alone used to be enough, which left the new
+ * owner with no phone and no firebase_uid — they owned a rating with nothing to
+ * sign in with once the session expired, and the link was already spent.
  *
  * SECURITY: claim tokens are signed with the same secret as session tokens, so
  * they carry `typ: 'guest_claim'` and the auth middleware rejects that type.
@@ -34,6 +39,16 @@ const CLAIM_TOKEN_TTL = '14d'
 
 const ClaimBody = z.object({
   token: z.string().min(10),
+  /**
+   * A Firebase ID token from completing phone sign-in.
+   *
+   * Required, because the link alone is not an identity. Claiming used to hand
+   * over the profile on possession of the URL, which meant the new owner ended up
+   * with `phone` and `firebase_uid` both null — they owned a rating and had
+   * nothing to sign in with once their session expired, and the link was spent.
+   * Verifying a phone here is what makes the profile theirs permanently.
+   */
+  firebase_id_token: z.string().min(1),
   /** Optional: the claimer's real name, replacing whatever the captain typed. */
   name: z.string().min(2).max(80).optional(),
 })
@@ -112,9 +127,12 @@ export async function guestClaimRoutes(app: FastifyInstance) {
   })
 
   /**
-   * POST /auth/claim — no authentication; possession of the link IS the credential,
-   * exactly like a magic link. Returns a real session so the claimer is signed in
-   * immediately rather than being bounced to a login screen.
+   * POST /auth/claim — no session required, but two proofs are.
+   *
+   * The link proves WHICH profile is being claimed; the phone sign-in proves WHO
+   * is claiming it and leaves them a credential they can come back with. Neither
+   * alone is enough: a forwarded link cannot take a profile without also passing
+   * an OTP, and a verified phone cannot take a profile without the link.
    */
   app.post('/auth/claim', async (request, reply) => {
     const body = ClaimBody.safeParse(request.body)
@@ -132,6 +150,14 @@ export async function guestClaimRoutes(app: FastifyInstance) {
       return reply.code(401).send({ error: 'This claim link is invalid or has expired' })
     }
 
+    const firebaseUser = await verifyFirebaseToken(body.data.firebase_id_token)
+    if (!firebaseUser) {
+      return reply.code(401).send({ error: 'Phone verification failed. Try signing in again.' })
+    }
+    if (!firebaseUser.phone_number) {
+      return reply.code(400).send({ error: 'A verified phone number is required to claim a profile' })
+    }
+
     const db = getDb()
     const guest = await db
       .selectFrom('users')
@@ -146,11 +172,33 @@ export async function guestClaimRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: 'This profile has already been claimed' })
     }
 
+    // That number may already be somebody. Merging two histories into one is a
+    // real feature with real ways to go wrong, so refuse plainly rather than
+    // silently picking a winner and losing the other side's ratings.
+    const taken = await db
+      .selectFrom('users')
+      .select(['id', 'name'])
+      .where('phone', '=', firebaseUser.phone_number)
+      .where('id', '!=', guest.id)
+      .executeTakeFirst()
+
+    if (taken) {
+      return reply.code(409).send({
+        error:
+          'That number already belongs to an AllSports account. ' +
+          'Sign in with it instead, or claim this profile with a different number.',
+        code: 'PHONE_IN_USE',
+      })
+    }
+
     const updated = await db
       .updateTable('users')
       .set({
         is_guest: false,
         claimed_at: new Date(),
+        // The point of the whole change: a credential that outlives the session.
+        phone: firebaseUser.phone_number,
+        firebase_uid: firebaseUser.uid,
         ...(body.data.name ? { name: body.data.name } : {}),
       })
       .where('id', '=', guest.id)

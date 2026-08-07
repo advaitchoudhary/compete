@@ -22,11 +22,7 @@ vi.mock('../modules/auth/auth.service', async () => {
   return {
     ...actual,
     initFirebase: vi.fn(),
-    verifyFirebaseToken: vi.fn().mockResolvedValue({
-      uid: 'test-claim-uid',
-      phone_number: '+919999999008',
-      email: undefined,
-    }),
+    verifyFirebaseToken: vi.fn(),
   }
 })
 
@@ -35,6 +31,26 @@ import jwt from '@fastify/jwt'
 import { guestClaimRoutes } from '../modules/users/guest-claim.routes'
 import { usersRoutes } from '../modules/users/users.routes'
 import { getDb } from '../shared/db/client'
+import { verifyFirebaseToken } from '../modules/auth/auth.service'
+
+/**
+ * Claiming now needs a verified phone as well as the link, so every claim in
+ * these tests carries one. Each caller gets a DISTINCT number: the route refuses
+ * a number that already belongs to another account, so reusing one would fail
+ * for the right reason in the wrong test.
+ */
+const ID_TOKEN = 'fake-firebase-id-token'
+let phoneSeq = 0
+function asPhoneUser(phone?: string) {
+  phoneSeq += 1
+  const number = phone ?? `+9198765${String(43000 + phoneSeq).padStart(5, '0')}`
+  vi.mocked(verifyFirebaseToken).mockResolvedValue({
+    uid: `test-claim-uid-${phoneSeq}`,
+    phone_number: number,
+    email: undefined,
+  })
+  return number
+}
 
 const TEST_JWT_SECRET = 'test-jwt-secret-minimum-32-chars-long'
 
@@ -230,32 +246,35 @@ describe('Guest claiming', () => {
   })
 
   it('rejects a garbage claim token', async () => {
+    asPhoneUser()
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/claim',
-      payload: { token: 'not-a-real-token' },
+      payload: { token: 'not-a-real-token', firebase_id_token: ID_TOKEN },
     })
     expect(res.statusCode).toBe(401)
   })
 
   it('rejects an access token used as a claim token', async () => {
+    asPhoneUser()
     // The inverse of the test above — the discriminator must work both ways.
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/claim',
-      payload: { token: app.jwt.sign({ sub: GUEST_ID }, { expiresIn: '1h' }) },
+      payload: { token: app.jwt.sign({ sub: GUEST_ID }, { expiresIn: '1h' }), firebase_id_token: ID_TOKEN },
     })
     expect(res.statusCode).toBe(401)
   })
 
   it('claiming promotes in place and keeps every rating', async () => {
+    asPhoneUser()
     const minted = await mintLink(CAPTAIN_ID)
     const token = minted.json().token
 
     const res = await app.inject({
       method: 'POST',
       url: '/v1/auth/claim',
-      payload: { token, name: 'Rohit Sharma' },
+      payload: { token, name: 'Rohit Sharma', firebase_id_token: ID_TOKEN },
     })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -293,10 +312,11 @@ describe('Guest claiming', () => {
   })
 
   it('the returned session actually works', async () => {
+    asPhoneUser()
     // Reset and claim again so this test owns its own token.
     await seedUser(GUEST_ID, 'Guest Striker', 'player', { isGuest: true, createdBy: CAPTAIN_ID })
     const token = (await mintLink(CAPTAIN_ID)).json().token
-    const claimed = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token } })
+    const claimed = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token, firebase_id_token: ID_TOKEN } })
     const access = claimed.json().access_token
 
     const me = await app.inject({
@@ -309,6 +329,7 @@ describe('Guest claiming', () => {
   })
 
   it('a claim link is single-use — the second attempt fails', async () => {
+    asPhoneUser()
     // GUEST_ID was just claimed by the previous test; reuse of any link must fail.
     const stale = await mintLink(CAPTAIN_ID)
     // Minting for an already-claimed user is refused up front...
@@ -316,14 +337,81 @@ describe('Guest claiming', () => {
   })
 
   it('claiming an already-claimed profile fails even with a valid older token', async () => {
+    asPhoneUser()
     await seedUser(GUEST_ID, 'Guest Striker', 'player', { isGuest: true, createdBy: CAPTAIN_ID })
     const token = (await mintLink(CAPTAIN_ID)).json().token
 
-    const first = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token } })
+    const first = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token, firebase_id_token: ID_TOKEN } })
     expect(first.statusCode).toBe(200)
 
-    const second = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token } })
+    const second = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token, firebase_id_token: ID_TOKEN } })
     expect(second.statusCode).toBe(409)
     expect(second.json().error).toMatch(/already been claimed/i)
+  })
+
+  it('claiming leaves a credential the person can come back with', async () => {
+    // The reason phone verification was made mandatory: promotion used to leave
+    // phone and firebase_uid null, so the new owner had a rating and no way to
+    // sign in once their session expired.
+    await seedUser(GUEST_ID, 'Guest Winger', 'player', { isGuest: true, createdBy: CAPTAIN_ID })
+    const phone = asPhoneUser()
+    const token = (await mintLink(CAPTAIN_ID)).json().token
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/claim',
+      payload: { token, firebase_id_token: ID_TOKEN },
+    })
+    expect(res.statusCode).toBe(200)
+
+    const row = await getDb()
+      .selectFrom('users')
+      .select(['phone', 'firebase_uid', 'is_guest'])
+      .where('id', '=', GUEST_ID)
+      .executeTakeFirstOrThrow()
+
+    expect(row.phone).toBe(phone)
+    expect(row.firebase_uid).toBeTruthy()
+    expect(row.is_guest).toBe(false)
+  })
+
+  it('the link alone is not enough — phone verification is required', async () => {
+    await seedUser(GUEST_ID, 'Guest Winger', 'player', { isGuest: true, createdBy: CAPTAIN_ID })
+    asPhoneUser()
+    const token = (await mintLink(CAPTAIN_ID)).json().token
+
+    const res = await app.inject({ method: 'POST', url: '/v1/auth/claim', payload: { token } })
+    expect(res.statusCode).toBe(400)
+
+    // And the profile is untouched — a failed claim must not consume the link.
+    const row = await getDb()
+      .selectFrom('users').select(['is_guest', 'claimed_at'])
+      .where('id', '=', GUEST_ID).executeTakeFirstOrThrow()
+    expect(row.is_guest).toBe(true)
+    expect(row.claimed_at).toBeNull()
+  })
+
+  it('refuses a number that already belongs to someone else', async () => {
+    await seedUser(GUEST_ID, 'Guest Winger', 'player', { isGuest: true, createdBy: CAPTAIN_ID })
+    // Give the existing real user the number the claimer will present.
+    const phone = '+919876500999'
+    await getDb().updateTable('users').set({ phone }).where('id', '=', REAL_USER_ID).execute()
+    asPhoneUser(phone)
+
+    const token = (await mintLink(CAPTAIN_ID)).json().token
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/claim',
+      payload: { token, firebase_id_token: ID_TOKEN },
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('PHONE_IN_USE')
+
+    // Merging two histories is a real feature; until it exists nothing is taken.
+    const row = await getDb()
+      .selectFrom('users').select(['is_guest'])
+      .where('id', '=', GUEST_ID).executeTakeFirstOrThrow()
+    expect(row.is_guest).toBe(true)
   })
 })
