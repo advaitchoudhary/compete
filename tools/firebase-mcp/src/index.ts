@@ -191,6 +191,45 @@ server.registerTool(
     text(
       String(
         await guard(async () => {
+          // Adding Firebase to a project does not provision Auth. Until something
+          // creates the Identity Toolkit config, every admin/v2 config call 404s
+          // with CONFIGURATION_NOT_FOUND — which reads like a missing project and
+          // is really a missing feature.
+          await api(
+            'POST',
+            `https://serviceusage.googleapis.com/v1/projects/${project_id}/services/identitytoolkit.googleapis.com:enable`,
+            {}
+          ).catch(() => undefined) // already enabled is fine
+
+          try {
+            await api('GET', `https://identitytoolkit.googleapis.com/admin/v2/projects/${project_id}/config`)
+          } catch (e) {
+            if ((e as GoogleApiError).status !== 404) throw e
+            // The programmatic initialiser is an Identity Platform (paid) feature.
+            // On the free Firebase Auth tier the only way to create the config is
+            // the console's "Get started", which costs nothing but is a human step.
+            try {
+              await api(
+                'POST',
+                `https://identitytoolkit.googleapis.com/v2/projects/${project_id}/identityPlatform:initializeAuth`,
+                {}
+              )
+            } catch (initErr) {
+              const msg = (initErr as GoogleApiError).message
+              if (/BILLING_NOT_ENABLED/i.test(msg)) {
+                throw new GoogleApiError(
+                  `Authentication is not initialised on ${project_id}, and initialising it through the API ` +
+                    'needs billing (Identity Platform is a paid feature).\n\n' +
+                    'The free path is one click, once:\n' +
+                    `  https://console.firebase.google.com/project/${project_id}/authentication\n` +
+                    '  → Get started → Phone → Enable\n\n' +
+                    'After that every tool here works, including this one for test numbers.'
+                )
+              }
+              throw initErr
+            }
+          }
+
           const mask = test_numbers
             ? 'signIn.phoneNumber.enabled,signIn.phoneNumber.testPhoneNumbers'
             : 'signIn.phoneNumber.enabled'

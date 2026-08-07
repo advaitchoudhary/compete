@@ -13,18 +13,65 @@
  * project creation, quota exhausted — and paraphrasing them into "request failed"
  * would throw away the only useful part.
  */
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { GoogleAuth } from 'google-auth-library'
+
+const execFileAsync = promisify(execFile)
 
 const SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/firebase',
 ]
 
+/**
+ * Which gcloud account to borrow a token from, when set.
+ *
+ * Application Default Credentials are the tidy path but frequently unusable in
+ * practice: a corporate Google account with enforced reauth leaves ADC returning
+ * `invalid_rapt` and the only cure is an interactive browser login. Meanwhile the
+ * developer usually has a perfectly good `gcloud` session for a different
+ * account. GCLOUD_ACCOUNT says "use that one instead".
+ */
+const GCLOUD_ACCOUNT = process.env.GCLOUD_ACCOUNT
+
+/**
+ * User credentials — as opposed to a service account — are billed against a
+ * "quota project", and firebase.googleapis.com refuses the call outright without
+ * one. Any project the caller owns will do.
+ */
+const QUOTA_PROJECT = process.env.GOOGLE_CLOUD_QUOTA_PROJECT
+
 let auth: GoogleAuth | undefined
 
 function client(): GoogleAuth {
   auth ??= new GoogleAuth({ scopes: SCOPES })
   return auth
+}
+
+/** A token from the gcloud CLI for the configured account. */
+async function gcloudToken(): Promise<string> {
+  const { stdout } = await execFileAsync('gcloud', [
+    'auth',
+    'print-access-token',
+    `--account=${GCLOUD_ACCOUNT}`,
+  ])
+  const token = stdout.trim()
+  if (!token) throw new GoogleApiError(`gcloud returned no token for ${GCLOUD_ACCOUNT}.`)
+  return token
+}
+
+async function accessToken(): Promise<string> {
+  if (GCLOUD_ACCOUNT) return gcloudToken()
+  const c = await client().getClient()
+  const token = await c.getAccessToken()
+  if (!token?.token) {
+    throw new GoogleApiError(
+      'Not authenticated. Either run `gcloud auth application-default login`, ' +
+        'or set GCLOUD_ACCOUNT to an account with an existing `gcloud` session.'
+    )
+  }
+  return token.token
 }
 
 export class GoogleApiError extends Error {
@@ -40,23 +87,22 @@ export class GoogleApiError extends Error {
 /** Whether a usable credential is present, and who it belongs to. */
 export async function whoami(): Promise<{ ok: boolean; detail: string }> {
   try {
-    const c = await client().getClient()
-    const token = await c.getAccessToken()
-    if (!token?.token) {
-      return { ok: false, detail: 'No access token — run `gcloud auth application-default login`.' }
-    }
+    const token = await accessToken()
+    const via = GCLOUD_ACCOUNT ? `gcloud session for ${GCLOUD_ACCOUNT}` : 'application default credentials'
     const res = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token.token)}`
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`
     )
-    if (!res.ok) return { ok: true, detail: 'Credential present (identity not readable).' }
+    const quota = QUOTA_PROJECT ? `, quota project ${QUOTA_PROJECT}` : ' (no GOOGLE_CLOUD_QUOTA_PROJECT set — firebase.googleapis.com will refuse user credentials)'
+    if (!res.ok) return { ok: true, detail: `credential present via ${via}${quota}` }
     const info = (await res.json()) as { email?: string; scope?: string }
-    return { ok: true, detail: info.email ?? 'service credential' }
+    return { ok: true, detail: `${info.email ?? 'service credential'} via ${via}${quota}` }
   } catch (e) {
     return {
       ok: false,
       detail:
         `${(e as Error).message}\n\n` +
-        'Run `gcloud auth application-default login` and try again.',
+        'Run `gcloud auth application-default login`, or set GCLOUD_ACCOUNT to an ' +
+        'account that already has a `gcloud` session.',
     }
   }
 }
@@ -67,18 +113,13 @@ export async function api<T = unknown>(
   url: string,
   body?: unknown
 ): Promise<T> {
-  const c = await client().getClient()
-  const token = await c.getAccessToken()
-  if (!token?.token) {
-    throw new GoogleApiError(
-      'Not authenticated. Run `gcloud auth application-default login`.'
-    )
-  }
+  const token = await accessToken()
 
   const res = await fetch(url, {
     method,
     headers: {
-      Authorization: `Bearer ${token.token}`,
+      Authorization: `Bearer ${token}`,
+      ...(QUOTA_PROJECT ? { 'x-goog-user-project': QUOTA_PROJECT } : {}),
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
