@@ -9,6 +9,10 @@ import { useAuthStore } from '../src/store/auth.store'
 import { api } from '../src/api/client'
 import { C, FONT, SPACE, RADIUS, ELEV } from '../src/theme'
 import { notify } from '../src/lib/dialog'
+import {
+  sendOtp, phoneAuthMessage, toE164, isPhoneAuthSupported,
+  type PendingVerification,
+} from '../src/lib/phone-auth'
 
 // Dev quick-login presets → /auth/dev-token bodies
 const ROLES = [
@@ -27,6 +31,41 @@ export default function AuthScreen() {
   const { setAuth } = useAuthStore()
   const [phone, setPhone] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
+
+  // Phone sign-in is two steps on one screen: the number, then the code. Kept as
+  // a single screen so the number stays visible while the SMS is being read off
+  // the notification shade.
+  const [pending, setPending] = useState<PendingVerification | null>(null)
+  const [code, setCode] = useState('')
+
+  const requestOtp = async () => {
+    setBusy('otp')
+    try {
+      setPending(await sendOtp(phone))
+    } catch (e) {
+      notify('Could not send the code', phoneAuthMessage(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const confirmOtp = async () => {
+    if (!pending) return
+    setBusy('confirm')
+    try {
+      const idToken = await pending.confirm(code.trim())
+      // The backend resolves this to the existing account by verified phone, so a
+      // seeded organizer signing in here lands on their own profile, not a new one.
+      const res = await api.post('/auth/verify', { firebase_id_token: idToken })
+      setAuth(res.data.access_token, res.data.user)
+      router.replace('/(tabs)')
+    } catch (e: any) {
+      const server = e?.response?.data?.error
+      notify('Could not sign in', typeof server === 'string' ? server : phoneAuthMessage(e))
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const devLogin = async (preset: (typeof ROLES)[number]) => {
     setBusy(preset.key)
@@ -57,7 +96,7 @@ export default function AuthScreen() {
         <Text style={s.tagline}>Track · Compete · Get Rated</Text>
       </View>
 
-      {/* phone (real auth — coming soon) */}
+      {/* phone sign-in */}
       <View style={s.form}>
         <Text style={s.label}>MOBILE NUMBER</Text>
         <View style={s.phoneRow}>
@@ -69,13 +108,57 @@ export default function AuthScreen() {
             keyboardType="phone-pad"
             maxLength={10}
             value={phone}
-            onChangeText={setPhone}
+            onChangeText={(v) => { setPhone(v); setPending(null); setCode('') }}
+            editable={!pending}
           />
         </View>
-        <TouchableOpacity style={[s.btnPrimary, { opacity: phone.length === 10 ? 1 : 0.35 }]} disabled>
-          <Text style={s.btnPrimaryText}>Send OTP</Text>
-          <Text style={s.btnPrimarySub}>Firebase phone auth · coming soon</Text>
-        </TouchableOpacity>
+
+        {!pending ? (
+          <TouchableOpacity
+            style={[s.btnPrimary, (phone.length < 10 || !isPhoneAuthSupported) && { opacity: 0.35 }]}
+            disabled={phone.length < 10 || !!busy || !isPhoneAuthSupported}
+            onPress={requestOtp}
+            activeOpacity={0.85}
+          >
+            {busy === 'otp'
+              ? <ActivityIndicator color={C.limeText} />
+              : <>
+                  <Text style={s.btnPrimaryText}>Send OTP</Text>
+                  <Text style={s.btnPrimarySub}>
+                    {isPhoneAuthSupported
+                      ? `We'll text ${toE164(phone || '')}`
+                      : 'Needs a custom dev build on this platform'}
+                  </Text>
+                </>}
+          </TouchableOpacity>
+        ) : (
+          <>
+            <Text style={s.label}>ENTER THE 6-DIGIT CODE</Text>
+            <TextInput
+              style={s.codeInput}
+              placeholder="––––––"
+              placeholderTextColor={C.t3}
+              keyboardType="number-pad"
+              maxLength={6}
+              value={code}
+              onChangeText={setCode}
+              autoFocus
+            />
+            <TouchableOpacity
+              style={[s.btnPrimary, code.length < 6 && { opacity: 0.35 }]}
+              disabled={code.length < 6 || !!busy}
+              onPress={confirmOtp}
+              activeOpacity={0.85}
+            >
+              {busy === 'confirm'
+                ? <ActivityIndicator color={C.limeText} />
+                : <Text style={s.btnPrimaryText}>Verify & sign in</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { setPending(null); setCode('') }} activeOpacity={0.7}>
+              <Text style={s.changeNumber}>← Use a different number</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
         <View style={s.dividerRow}>
           <View style={s.dividerLine} />
@@ -148,6 +231,13 @@ const s = StyleSheet.create({
   },
   btnPrimaryText: { color: C.limeText, fontFamily: FONT.bold, fontSize: 16 },
   btnPrimarySub: { color: 'rgba(10,15,0,0.55)', fontSize: 11, fontFamily: FONT.medium, marginTop: 2 },
+  codeInput: {
+    backgroundColor: C.s1, borderRadius: RADIUS.md, paddingHorizontal: 16, paddingVertical: 14,
+    color: C.t1, fontSize: 26, fontFamily: FONT.black, borderWidth: 1, borderColor: C.b1,
+    letterSpacing: 12, textAlign: 'center',
+    ...(({ outlineStyle: 'none' }) as object),
+  },
+  changeNumber: { color: C.t2, fontSize: 13, fontFamily: FONT.semibold, textAlign: 'center', paddingVertical: 6 },
 
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: SPACE.sm },
   dividerLine: { flex: 1, height: 1, backgroundColor: C.b1 },
