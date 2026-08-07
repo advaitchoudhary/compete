@@ -211,10 +211,26 @@ export async function guestClaimRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: 'This profile has already been claimed' })
     }
 
+    // The rating is the entire reason this person tapped the link. Return it so
+    // the success screen can show the number rather than promising it exists.
+    const profiles = await db
+      .selectFrom('sport_profiles as sp')
+      .innerJoin('sports as s', 's.id', 'sp.sport_id')
+      .select(['s.slug as sport_slug', 'sp.current_rating', 'sp.matches_played', 'sp.wins'])
+      .where('sp.user_id', '=', updated.id)
+      .orderBy('sp.matches_played', 'desc')
+      .execute()
+
     return {
       access_token: issueJwt(app, updated.id),
       claimed: true,
       user: updated,
+      profiles: profiles.map((p) => ({
+        sport_slug: p.sport_slug,
+        rating: Number(p.current_rating),
+        matches_played: p.matches_played,
+        wins: p.wins,
+      })),
     }
   })
 }

@@ -20,7 +20,8 @@ import {
   ActivityIndicator,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { BASE_URL, setToken, saveUser } from '../src/api/client'
+import { BASE_URL } from '../src/api/client'
+import { useAuthStore } from '../src/store/auth.store'
 import {
   sendOtp, phoneAuthMessage, normalisePhoneInput, isCompletePhone,
   type PendingVerification,
@@ -42,6 +43,10 @@ export default function ClaimPage() {
   const [state, setState] = useState<State>('ready')
   const [error, setError] = useState<string | null>(null)
   const [claimedName, setClaimedName] = useState('')
+  const [claimedProfile, setClaimedProfile] = useState<{
+    rating: number; matches_played: number; wins: number
+  } | null>(null)
+  const setAuth = useAuthStore((st) => st.setAuth)
 
   useEffect(() => {
     if (!token) {
@@ -86,9 +91,12 @@ export default function ClaimPage() {
       }
 
       // Straight into a session — the point is that claiming IS signing in.
-      setToken(body.access_token)
-      saveUser(body.user)
+      // setAuth, not setToken/saveUser: those only touch storage, leaving the
+      // in-memory store empty, so the app greeted the new owner as a stranger
+      // ("Hey Player.") with an empty feed until the next cold start.
+      setAuth(body.access_token, body.user)
       setClaimedName(body.user.name)
+      setClaimedProfile((body.profiles ?? [])[0] ?? null)
       setState('done')
     } catch (e) {
       setState('ready')
@@ -117,9 +125,19 @@ export default function ClaimPage() {
         <View style={s.card}>
           <Text style={[s.badge, { color: C.lime }]}>PROFILE CLAIMED</Text>
           <Text style={s.title}>Welcome, {claimedName}.</Text>
+          {claimedProfile ? (
+            <View style={s.ratingBox}>
+              <Text style={s.ratingValue}>{claimedProfile.rating.toFixed(1)}</Text>
+              <Text style={s.ratingLabel}>YOUR RATING</Text>
+              <Text style={s.ratingMeta}>
+                earned across {claimedProfile.matches_played} match
+                {claimedProfile.matches_played === 1 ? '' : 'es'}
+                {claimedProfile.wins > 0 ? ` · ${claimedProfile.wins} won` : ''}
+              </Text>
+            </View>
+          ) : null}
           <Text style={s.body}>
-            Every match you have already played is on your profile, with the rating you earned. It
-            keeps building from here.
+            Every match you have already played is on your profile. It keeps building from here.
           </Text>
           <TouchableOpacity style={s.primary} onPress={() => router.replace('/(tabs)')} activeOpacity={0.85}>
             <Text style={s.primaryText}>See my profile</Text>
@@ -269,6 +287,10 @@ const s = StyleSheet.create({
     ...ELEV.glow(C.lime, 0.3),
   },
   primaryText: { color: C.limeText, fontSize: 15, fontFamily: FONT.bold },
+  ratingBox: { alignItems: 'center', paddingVertical: 18, gap: 2 },
+  ratingValue: { color: C.lime, fontSize: 52, fontWeight: '900', letterSpacing: -2 },
+  ratingLabel: { color: C.t3, fontSize: 10, fontWeight: '800', letterSpacing: 2 },
+  ratingMeta: { color: C.t2, fontSize: 12, marginTop: 4 },
   inlineError: { color: C.amber, fontSize: 12, lineHeight: 18 },
   fine: {
     color: C.t3,
