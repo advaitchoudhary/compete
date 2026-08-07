@@ -268,6 +268,19 @@ server.registerTool(
     text(
       String(
         await guard(async () => {
+          // The IAM API has to be on for BOTH the target and the quota project —
+          // the 403 names the quota project, which is confusing when you are
+          // provisioning a different one. Enabling an already-enabled service is
+          // a no-op, so this is cheap insurance.
+          const quota = process.env.GOOGLE_CLOUD_QUOTA_PROJECT
+          for (const p of new Set([project_id, quota].filter(Boolean) as string[])) {
+            await api(
+              'POST',
+              `https://serviceusage.googleapis.com/v1/projects/${p}/services/iam.googleapis.com:enable`,
+              {}
+            ).catch(() => undefined)
+          }
+
           const list = await api<{ accounts?: Array<{ name: string; email: string }> }>(
             'GET',
             `https://iam.googleapis.com/v1/projects/${project_id}/serviceAccounts`
