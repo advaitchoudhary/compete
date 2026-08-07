@@ -11,6 +11,7 @@ import { C, FONT, SPACE, RADIUS, ELEV } from '../src/theme'
 import { notify } from '../src/lib/dialog'
 import {
   sendOtp, phoneAuthMessage, toE164, isPhoneAuthSupported,
+  normalisePhoneInput, isCompletePhone, LOCAL_PHONE_DIGITS,
   type PendingVerification,
 } from '../src/lib/phone-auth'
 
@@ -141,9 +142,12 @@ export default function AuthScreen() {
             placeholder="98765 43210"
             placeholderTextColor={C.t3}
             keyboardType="phone-pad"
-            maxLength={10}
             value={phone}
-            onChangeText={(v) => { setPhone(v); setPending(null); setCode('') }}
+            onChangeText={(v) => {
+              setPhone(normalisePhoneInput(v))
+              setPending(null)
+              setCode('')
+            }}
             editable={!pending}
           />
         </View>
@@ -186,8 +190,8 @@ export default function AuthScreen() {
           </>
         ) : !pending ? (
           <TouchableOpacity
-            style={[s.btnPrimary, (phone.length < 10 || !isPhoneAuthSupported) && { opacity: 0.35 }]}
-            disabled={phone.length < 10 || !!busy || !isPhoneAuthSupported}
+            style={[s.btnPrimary, (!isCompletePhone(phone) || !isPhoneAuthSupported) && { opacity: 0.35 }]}
+            disabled={!isCompletePhone(phone) || !!busy || !isPhoneAuthSupported}
             onPress={requestOtp}
             activeOpacity={0.85}
           >
@@ -196,9 +200,13 @@ export default function AuthScreen() {
               : <>
                   <Text style={s.btnPrimaryText}>Send OTP</Text>
                   <Text style={s.btnPrimarySub}>
-                    {isPhoneAuthSupported
-                      ? `We'll text ${toE164(phone || '')}`
-                      : 'Needs a custom dev build on this platform'}
+                    {!isPhoneAuthSupported
+                      ? 'Needs a custom dev build on this platform'
+                      : isCompletePhone(phone)
+                        ? `We'll text ${toE164(phone)}`
+                        : `${LOCAL_PHONE_DIGITS - phone.length} more digit${
+                            LOCAL_PHONE_DIGITS - phone.length === 1 ? '' : 's'
+                          }`}
                   </Text>
                 </>}
           </TouchableOpacity>

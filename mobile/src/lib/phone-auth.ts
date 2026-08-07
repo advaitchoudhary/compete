@@ -87,12 +87,35 @@ export interface PendingVerification {
   confirm(code: string): Promise<string>
 }
 
+/** How many digits a local subscriber number has. India: 10. */
+export const LOCAL_PHONE_DIGITS = 10
+
+/**
+ * Reduce anything a person might type or paste to the bare local digits.
+ *
+ * People paste `+91 98765 43210`, type a leading 0 out of habit, or copy a number
+ * with spaces in it. A plain `maxLength={10}` on the raw string counts characters
+ * rather than digits, so `+919876543210` was being truncated to `+919876543` and
+ * sent as a real number — the field looked full, the button went live, and
+ * Firebase rejected a number the person never entered.
+ */
+export function normalisePhoneInput(raw: string): string {
+  let digits = raw.replace(/\D/g, '')
+  // Pasted with the country code.
+  if (digits.length > LOCAL_PHONE_DIGITS && digits.startsWith('91')) digits = digits.slice(2)
+  // A leading 0 is a domestic trunk prefix, not part of the number.
+  digits = digits.replace(/^0+/, '')
+  return digits.slice(0, LOCAL_PHONE_DIGITS)
+}
+
+export const isCompletePhone = (raw: string) =>
+  normalisePhoneInput(raw).length === LOCAL_PHONE_DIGITS
+
 /** Normalise what someone types into the E.164 form Firebase requires. */
 export function toE164(raw: string, defaultCountry = '+91'): string {
   const trimmed = raw.replace(/[\s\-()]/g, '')
   if (trimmed.startsWith('+')) return trimmed
-  // A leading 0 is a domestic trunk prefix and is not part of the number.
-  return defaultCountry + trimmed.replace(/^0+/, '')
+  return defaultCountry + normalisePhoneInput(trimmed)
 }
 
 /**

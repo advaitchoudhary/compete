@@ -21,7 +21,10 @@ import {
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { BASE_URL, setToken, saveUser } from '../src/api/client'
-import { sendOtp, phoneAuthMessage, type PendingVerification } from '../src/lib/phone-auth'
+import {
+  sendOtp, phoneAuthMessage, normalisePhoneInput, isCompletePhone,
+  type PendingVerification,
+} from '../src/lib/phone-auth'
 import { C, FONT, SPACE, RADIUS, ELEV } from '../src/theme'
 
 type State = 'ready' | 'claiming' | 'done' | 'error'
@@ -153,11 +156,10 @@ export default function ClaimPage() {
         <TextInput
           style={s.input}
           value={phone}
-          onChangeText={(v) => { setPhone(v); setPending(null); setCode('') }}
+          onChangeText={(v) => { setPhone(normalisePhoneInput(v)); setPending(null); setCode('') }}
           placeholder="98765 43210"
           placeholderTextColor={C.t3}
           keyboardType="phone-pad"
-          maxLength={10}
           editable={!pending}
         />
 
@@ -182,12 +184,12 @@ export default function ClaimPage() {
         <TouchableOpacity
           style={[
             s.primary,
-            (state === 'claiming' || (!pending && phone.length < 10) || (pending && code.length < 6)) &&
+            (state === 'claiming' || (!pending && !isCompletePhone(phone)) || (pending && code.length < 6)) &&
               { opacity: 0.5 },
           ]}
           onPress={pending ? claim : requestOtp}
           disabled={
-            state === 'claiming' || (!pending ? phone.length < 10 : code.length < 6)
+            state === 'claiming' || (!pending ? !isCompletePhone(phone) : code.length < 6)
           }
           activeOpacity={0.85}
         >
