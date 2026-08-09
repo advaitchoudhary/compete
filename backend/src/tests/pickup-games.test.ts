@@ -32,7 +32,8 @@ const ALICE     = '550e8400-e29b-41d4-a716-4466554409a2'
 const BOB       = '550e8400-e29b-41d4-a716-4466554409a3'
 const CARL      = '550e8400-e29b-41d4-a716-4466554409a4'
 const DEE       = '550e8400-e29b-41d4-a716-4466554409a5'
-const SEEDED = [ORGANIZER, ALICE, BOB, CARL, DEE]
+const REFEREE_ID = '550e8400-e29b-41d4-a716-4466554409a9'
+const SEEDED = [ORGANIZER, ALICE, BOB, CARL, DEE, REFEREE_ID]
 
 let app: any
 let footballId: string
@@ -98,7 +99,18 @@ async function cleanup() {
 
   if (gameIds.length > 0) {
     await db.deleteFrom('event_players').where('event_id', 'in', gameIds).execute()
+    await db.deleteFrom('matches').where('event_id', 'in', gameIds).execute()
+    await db.deleteFrom('event_referees').where('event_id', 'in', gameIds).execute()
     await db.deleteFrom('events').where('id', 'in', gameIds).execute()
+  }
+  // Ad-hoc sides drawn by these tests, and their membership rows.
+  const adHoc = await db
+    .selectFrom('teams').select('id')
+    .where('organizer_id', '=', ORGANIZER).where('is_ad_hoc', '=', true).execute()
+  if (adHoc.length > 0) {
+    const teamIds = adHoc.map((t) => t.id)
+    await db.deleteFrom('team_members').where('team_id', 'in', teamIds).execute()
+    await db.deleteFrom('teams').where('id', 'in', teamIds).execute()
   }
   if (ids.length > 0) await db.deleteFrom('users').where('id', 'in', ids).execute()
   await db.deleteFrom('users').where('id', 'in', SEEDED).execute()
@@ -278,6 +290,125 @@ describe('Pickup games — withdrawal and the waitlist', () => {
     expect(res.json().status).toBe('waitlist')
     expect(res.json().waitlist_position).toBe(1)
     expect(res.json().spots_left).toBe(0)
+  })
+})
+
+describe('Pickup games — drawing the sides', () => {
+  const REFEREE = '550e8400-e29b-41d4-a716-4466554409a9'
+
+  async function fillAndRef(perSide = 3) {
+    const id = await createGame(perSide)
+    await seedUser(REFEREE, 'Pickup Ref', 'referee')
+    await getDb().updateTable('users').set({ referee_tier: 'amateur' })
+      .where('id', '=', REFEREE).execute()
+    // One party fills the whole game.
+    await join(id, ALICE, Array.from({ length: perSide * 2 - 1 }, (_, i) => `F${i}`))
+    return id
+  }
+
+  it('refuses to draw without a referee', async () => {
+    const id = await fillAndRef(3)
+    const res = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toMatch(/referee/i)
+  })
+
+  it('refuses to draw a game that is not full', async () => {
+    const id = await createGame(3)
+    await seedUser(REFEREE, 'Pickup Ref', 'referee')
+    await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: REFEREE },
+    })
+    await join(id, ALICE)
+    const res = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().error).toMatch(/exactly 6 players/i)
+  })
+
+  it('the organizer cannot referee their own game', async () => {
+    const id = await createGame(3)
+    const res = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: ORGANIZER },
+    })
+    // Whoever referees scores the match; an organizer scoring their own game is
+    // exactly what the grading system exists to prevent.
+    expect(res.statusCode).toBe(409)
+  })
+
+  it('refuses a nominee who is not an approved referee', async () => {
+    const id = await createGame(3)
+    const res = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: BOB },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('draws two ad-hoc sides and a match carrying the duration', async () => {
+    const id = await fillAndRef(3)
+    await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: REFEREE },
+    })
+
+    const res = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    expect(res.statusCode).toBe(201)
+    const body = res.json()
+    expect(body.sides.colours.players).toHaveLength(3)
+    expect(body.sides.whites.players).toHaveLength(3)
+
+    const match = await getDb()
+      .selectFrom('matches')
+      .select(['referee_id', 'duration_minutes', 'tier', 'event_id'])
+      .where('id', '=', body.match_id)
+      .executeTakeFirstOrThrow()
+
+    expect(match.referee_id).toBe(REFEREE)
+    // The whole reason duration is asked for: a NULL reaches the engine as 90 min.
+    expect(match.duration_minutes).toBe(60)
+    expect(match.tier).toBe('amateur')
+
+    const teams = await getDb()
+      .selectFrom('teams').select(['is_ad_hoc'])
+      .where('id', 'in', [body.sides.colours.team_id, body.sides.whites.team_id])
+      .execute()
+    expect(teams.every((t) => t.is_ad_hoc)).toBe(true)
+
+    // Everyone knows which side they are on.
+    const drawn = await getDb()
+      .selectFrom('event_players').select(['team_id'])
+      .where('event_id', '=', id).where('status', '=', 'confirmed').execute()
+    expect(drawn.every((p) => p.team_id !== null)).toBe(true)
+  })
+
+  it('redrawing replaces the previous sides rather than stacking them', async () => {
+    const id = await fillAndRef(3)
+    await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: REFEREE },
+    })
+    const first = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    // A drawn game is 'active'; drawing again must still work while nothing has
+    // kicked off, for the player who turns up late.
+    const second = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    expect(second.statusCode).toBe(201)
+    expect(second.json().match_id).not.toBe(first.json().match_id)
+
+    const matches = await getDb()
+      .selectFrom('matches').select('id').where('event_id', '=', id).execute()
+    expect(matches).toHaveLength(1)
   })
 })
 
