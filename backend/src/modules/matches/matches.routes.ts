@@ -6,6 +6,7 @@ import type { MatchStatus } from '../../shared/db/types'
 import { getRedisPub, PubSubChannels } from '../../shared/redis/client'
 import { assertMatchReferee } from './match.access'
 import { MATCH_TIERS, canOfficiate } from '../../shared/tiers'
+import { resolveViewer } from '../users/claim-link.access'
 
 const CreateMatchBody = z.object({
   event_id: z.string().uuid().optional(),
@@ -149,11 +150,28 @@ export async function matchesRoutes(app: FastifyInstance) {
         // a rating and no way to reach it until somebody sends them the link.
         'u.is_guest',
         'u.claimed_at',
+        'u.created_by',
       ])
       .where('mps.match_id', '=', id)
       .execute()
 
-    return { ...match, player_stats: playerStats }
+    // Whether THIS viewer may share each guest's link. The screen used to infer it
+    // from the viewer's role alone, which hid the button from the captain who typed
+    // the guest in and from the player who brought a mate to a pickup game — the two
+    // people who actually have the number. See claim-link.access.ts.
+    //
+    // This route is deliberately open, so there may be no viewer at all. A signed-out
+    // reader gets `false` everywhere rather than an error.
+    const mayShare = await resolveViewer(request, db)
+
+    return {
+      ...match,
+      player_stats: playerStats.map(({ created_by, ...p }) => ({
+        ...p,
+        can_send_claim_link:
+          p.is_guest && !p.claimed_at && mayShare({ id: p.user_id, created_by }),
+      })),
+    }
   })
 
   // PATCH /matches/:id/start — mark match as live

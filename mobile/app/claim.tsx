@@ -1,10 +1,14 @@
 /**
  * Guest claim page — the far end of the WhatsApp link.
  *
- * Someone played in a tournament, was typed in by their captain, and earned a real
- * rating. They tap a link and this page hands them the profile. No account, no
- * password, no download: possession of the link is the credential, exactly like a
- * magic link.
+ * Someone was typed in by name — by a captain registering a tournament squad, or by
+ * a mate bringing them to a pickup game — played, and earned a real rating. They tap
+ * a link and this page hands them the profile.
+ *
+ * The copy here says "a game" and "whoever entered you" rather than naming a
+ * tournament or a captain, because this page cannot tell the two routes apart: all
+ * it holds is a claim token, which says which profile and nothing about where the
+ * profile came from. Wording that guessed would be wrong half the time.
  *
  * Deliberately unauthenticated and self-contained — it uses raw fetch rather than
  * the axios client, because that client attaches a JWT and clears state on 401,
@@ -111,8 +115,8 @@ export default function ClaimPage() {
           <Text style={s.badge}>CLAIM FAILED</Text>
           <Text style={s.title}>{error}</Text>
           <Text style={s.body}>
-            Claim links expire, and each profile can only be claimed once. Ask whoever ran your
-            tournament to send a fresh link.
+            Claim links expire, and each profile can only be claimed once. Ask whoever entered you
+            to send a fresh link.
           </Text>
         </View>
       </View>
@@ -153,8 +157,8 @@ export default function ClaimPage() {
         <Text style={s.badge}>YOU PLAYED TODAY</Text>
         <Text style={s.title}>Claim your profile</Text>
         <Text style={s.body}>
-          Your captain entered you into a tournament, and you have been rated on every match you
-          played. Claim the profile to keep it.
+          Someone entered you into a game under this name, and you have been rated on every match
+          you played. Claim the profile to keep it.
         </Text>
 
         <Text style={s.label}>YOUR NAME</Text>

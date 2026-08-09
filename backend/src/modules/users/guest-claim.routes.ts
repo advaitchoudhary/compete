@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requireAuth } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
 import { issueJwt, verifyFirebaseToken } from '../auth/auth.service'
+import { claimLinkAuthorizer } from './claim-link.access'
 
 /**
  * Guest claiming — turning a name someone typed into an owned profile.
@@ -84,6 +85,8 @@ export async function guestClaimRoutes(app: FastifyInstance) {
     }
 
     // ── Who may hand out this link ──────────────────────────────────────────
+    // Defined once in claim-link.access.ts, because the match screen has to ask the
+    // same question to decide whether to draw the button.
     const me = await db
       .selectFrom('users')
       .select('role')
@@ -91,24 +94,9 @@ export async function guestClaimRoutes(app: FastifyInstance) {
       .executeTakeFirst()
     if (!me) return reply.code(401).send({ error: 'Unauthorized' })
 
-    let allowed =
-      me.role === 'admin' || me.role === 'referee' || me.role === 'organizer' ||
-      guest.created_by === request.userId
+    const mayShare = await claimLinkAuthorizer(db, { id: request.userId, role: me.role })
 
-    if (!allowed) {
-      // Or a captain of a team the guest plays for.
-      const shared = await db
-        .selectFrom('team_members as mine')
-        .innerJoin('team_members as theirs', 'theirs.team_id', 'mine.team_id')
-        .select('mine.team_id')
-        .where('mine.user_id', '=', request.userId)
-        .where('mine.role', 'in', ['captain', 'vice_captain'])
-        .where('theirs.user_id', '=', guestId)
-        .executeTakeFirst()
-      allowed = Boolean(shared)
-    }
-
-    if (!allowed) {
+    if (!mayShare({ id: guest.id, created_by: guest.created_by })) {
       return reply.code(403).send({
         error: 'Only this player’s captain, a referee, an organizer or an admin can share a claim link',
       })

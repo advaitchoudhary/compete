@@ -124,9 +124,11 @@ function PlayerStatRow({
   onSendClaimLink?: (userId: string, name: string) => void
   sending?: boolean
 }) {
-  // Only an unclaimed guest has anything to claim. Someone who already owns their
-  // profile must not be offered a link that would 409.
-  const claimable = Boolean(onSendClaimLink && stat.is_guest && !stat.claimed_at)
+  // The server decides — it already knows the whole rule, including the captain who
+  // typed this guest in and the player who brought them to a pickup game. It also
+  // covers "unclaimed guest", so a profile that is already owned is never offered a
+  // link that would 409.
+  const claimable = Boolean(onSendClaimLink && stat.can_send_claim_link)
   const stats: Record<string, unknown> = stat.stats ?? {}
   // Non-zero first, so the four we show are the four that say something. Sorting
   // after slicing would have let a lone goal fall off the end of a long stat line.
@@ -356,11 +358,8 @@ export default function MatchDetailScreen() {
   const isCompleted = match.status === 'completed'
   const hasScore    = match.home_score != null || match.away_score != null
   const isReferee   = !!user && (user.id === match.referee_id || (user as any).role === 'admin')
-  // Roles the backend lets mint a claim link and that we can identify from the
-  // session alone. Captains qualify too but the match payload doesn't say who
-  // captains which team — see the note at the call site.
-  const canSendClaimLinks =
-    user?.role === 'referee' || user?.role === 'organizer' || user?.role === 'admin'
+  // Whether any given player's link is ours to send is answered per player by the
+  // server, on `can_send_claim_link`. Nothing to work out from the session here.
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
@@ -487,11 +486,7 @@ export default function MatchDetailScreen() {
                         key={stat.user_id ?? i}
                         stat={stat}
                         sportColor={spCfg.color}
-                        // Captains may also mint links, but the match payload does
-                        // not say who captains which team, so the button is shown
-                        // to the roles we can identify here. The backend is the
-                        // authority either way.
-                        onSendClaimLink={canSendClaimLinks ? sendClaimLink : undefined}
+                        onSendClaimLink={sendClaimLink}
                         sending={sendingClaim === stat.user_id}
                       />
                     ))}

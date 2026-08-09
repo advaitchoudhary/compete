@@ -59,7 +59,14 @@ const OUTSIDER_ID = '550e8400-e29b-41d4-a716-4466554408b2'
 const REF_ID = '550e8400-e29b-41d4-a716-4466554408b3'
 const GUEST_ID = '550e8400-e29b-41d4-a716-4466554408b4'
 const REAL_USER_ID = '550e8400-e29b-41d4-a716-4466554408b5'
-const ALL_TEST_USERS = [CAPTAIN_ID, OUTSIDER_ID, REF_ID, GUEST_ID, REAL_USER_ID]
+// A pickup game has no teams and no captains: one player brings a mate. Both of
+// these sit outside every team, so they exercise the created_by branch alone.
+const PICKUP_HOST_ID = '550e8400-e29b-41d4-a716-4466554408b6'
+const PICKUP_GUEST_ID = '550e8400-e29b-41d4-a716-4466554408b7'
+const ALL_TEST_USERS = [
+  CAPTAIN_ID, OUTSIDER_ID, REF_ID, GUEST_ID, REAL_USER_ID,
+  PICKUP_HOST_ID, PICKUP_GUEST_ID,
+]
 
 let footballSportId: string
 let teamId: string
@@ -136,6 +143,10 @@ describe('Guest claiming', () => {
     await seedUser(REF_ID, 'Vikram Referee', 'referee')
     await seedUser(REAL_USER_ID, 'Already Registered', 'player')
     await seedUser(GUEST_ID, 'Guest Striker', 'player', { isGuest: true, createdBy: CAPTAIN_ID })
+    await seedUser(PICKUP_HOST_ID, 'Brought A Mate', 'player')
+    await seedUser(PICKUP_GUEST_ID, 'The Mate', 'player', {
+      isGuest: true, createdBy: PICKUP_HOST_ID,
+    })
 
     const db = getDb()
     const sport = await db
@@ -218,6 +229,31 @@ describe('Guest claiming', () => {
   it('a referee can also mint a link', async () => {
     const res = await mintLink(REF_ID)
     expect(res.statusCode).toBe(200)
+  })
+
+  /**
+   * The pickup case. Nobody here is staff and there is no team to captain — the
+   * only thing connecting these two is that one typed the other's name in. If this
+   * fails, a mate brought to a Tuesday kickabout earns a rating that nobody in the
+   * product can hand them.
+   */
+  it('the player who brought a guest to a pickup game can mint their link', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/guests/${PICKUP_GUEST_ID}/claim-link`,
+      headers: { authorization: accessHeader(PICKUP_HOST_ID, app) },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().guest_name).toBe('The Mate')
+  })
+
+  it('but not for a guest somebody else brought', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/guests/${GUEST_ID}/claim-link`,
+      headers: { authorization: accessHeader(PICKUP_HOST_ID, app) },
+    })
+    expect(res.statusCode).toBe(403)
   })
 
   it('refuses to mint for a user who is not a guest', async () => {
