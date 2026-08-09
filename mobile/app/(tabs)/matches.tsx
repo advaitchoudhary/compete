@@ -166,6 +166,11 @@ export default function MatchesScreen() {
   // navigating a tournament by name. Polls while the app is open so a bracket
   // generated mid-session appears without a manual refresh.
   const isRef = user?.role === 'referee' || user?.role === 'admin'
+  // Same gate as POST /matches: whoever creates a match becomes its referee, so
+  // this cannot be open to players. Organizers are excluded on purpose — an
+  // organizer refereeing their own match is exactly what the tier system exists to
+  // prevent. Their path is Auto-generate fixtures, or Draw teams for a pickup game.
+  const canCreateMatch = isRef
   const { data: refDuty } = useQuery({
     queryKey: ['referee', 'matches'],
     queryFn: () => api.get('/referee/matches').then(r => r.data),
@@ -212,13 +217,15 @@ export default function MatchesScreen() {
       {/* Header */}
       <View style={s.header}>
         <Text style={s.title}>Matches</Text>
-        <TouchableOpacity
-          style={s.newBtn}
-          activeOpacity={0.85}
-          onPress={() => router.push('/create-match')}
-        >
-          <Text style={s.newBtnText}>+ New</Text>
-        </TouchableOpacity>
+        {canCreateMatch && (
+          <TouchableOpacity
+            style={s.newBtn}
+            activeOpacity={0.85}
+            onPress={() => router.push('/create-match')}
+          >
+            <Text style={s.newBtnText}>+ New</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView
@@ -366,12 +373,16 @@ export default function MatchesScreen() {
                 ? 'Schedule a match to see it here.'
                 : filter === 'Completed'
                 ? 'Play your first match to see results.'
-                : 'Create a match, add players, and\nstart tracking stats in real time.'}
+                : canCreateMatch
+                  ? 'Create a match, add players, and\nstart tracking stats in real time.'
+                  : 'Matches you play in will appear here.'}
             </Text>
           </View>
         )}
 
-        {/* Quick start grid */}
+        {/* Quick start grid — referees only, for the same reason as above. */}
+        {canCreateMatch && (
+        <>
         <Text style={s.quickLabel}>START A MATCH IN</Text>
         <View style={s.sportGrid}>
           {SPORT_LIST.map(sport => {
@@ -389,6 +400,8 @@ export default function MatchesScreen() {
             )
           })}
         </View>
+        </>
+        )}
 
         <View style={{ height: 48 }} />
       </ScrollView>

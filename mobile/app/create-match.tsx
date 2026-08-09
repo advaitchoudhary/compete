@@ -24,6 +24,9 @@ async function createTeam(name: string, sport_slug: string) {
   return res.data
 }
 
+/** Slot lengths a casual game actually runs to. */
+const DURATIONS = [20, 30, 45, 60, 90]
+
 async function createMatch(
   sport_slug: string,
   home_team_id: string,
@@ -31,8 +34,9 @@ async function createMatch(
   venue: string,
   event_id: string | null,
   round: string,
+  duration_minutes: number,
 ) {
-  const body: any = { sport_slug, home_team_id, away_team_id }
+  const body: any = { sport_slug, home_team_id, away_team_id, duration_minutes }
   if (venue.trim())    body.venue    = venue.trim()
   if (event_id)        body.event_id = event_id
   if (round.trim())    body.round    = round.trim()
@@ -49,6 +53,9 @@ export default function CreateMatchScreen() {
   const [homeTeam, setHomeTeam] = useState('')
   const [awayTeam, setAwayTeam] = useState('')
   const [venue, setVenue]     = useState('')
+  // Drives the rating weight. Left unset it reaches the engine as NULL, which is
+  // read as a full 90 minutes.
+  const [duration, setDuration] = useState(60)
   const [eventId]             = useState(params.event_id ?? null)
   const [round, setRound]     = useState(params.round ?? '')
 
@@ -71,7 +78,7 @@ export default function CreateMatchScreen() {
         createTeam(away, sport.slug),
       ])
 
-      return createMatch(sport.slug, homeData.id, awayData.id, venue, eventId, round)
+      return createMatch(sport.slug, homeData.id, awayData.id, venue, eventId, round, duration)
     },
     onSuccess: () => {
       if (eventId) {
@@ -189,6 +196,26 @@ export default function CreateMatchScreen() {
           </View>
 
           {/* Venue */}
+          <Text style={s.sectionLabel}>MATCH LENGTH</Text>
+          <View style={s.durationRow}>
+            {DURATIONS.map(d => {
+              const active = duration === d
+              return (
+                <TouchableOpacity
+                  key={d}
+                  style={[s.durationPill, active && { backgroundColor: cfg.color, borderColor: cfg.color }]}
+                  onPress={() => setDuration(d)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[s.durationText, active && { color: C.bg }]}>{d}m</Text>
+                </TouchableOpacity>
+              )
+            })}
+          </View>
+          <Text style={s.durationHint}>
+            A shorter game moves ratings less than a full one.
+          </Text>
+
           <Text style={s.sectionLabel}>VENUE (OPTIONAL)</Text>
           <View style={s.inputWrap}>
             <Text style={s.inputIcon}>📍</Text>
@@ -332,6 +359,13 @@ const s = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 14, gap: 10,
   },
   inputIcon:  { fontSize: 16 },
+  durationRow: { flexDirection: 'row', gap: 8, marginHorizontal: 16 },
+  durationPill: {
+    flex: 1, alignItems: 'center', paddingVertical: 11, borderRadius: 12,
+    backgroundColor: C.s2, borderWidth: 1, borderColor: C.b1,
+  },
+  durationText: { color: C.t2, fontSize: 13, fontWeight: '700' },
+  durationHint: { color: C.t3, fontSize: 11, marginHorizontal: 16, marginTop: 6 },
   venueInput: { flex: 1, color: C.t1, fontSize: 15, fontWeight: '500' },
 
   submitBtn: {

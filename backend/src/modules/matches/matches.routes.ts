@@ -16,6 +16,13 @@ const CreateMatchBody = z.object({
   round: z.string().max(20).optional(),
   scheduled_at: z.string().datetime().optional(),
   tier: z.enum(MATCH_TIERS).optional(),  // defaults to 'amateur'
+  // Both feed the rating. A NULL duration is read as a full 90 minutes by
+  // match_weight in the engine, so every standalone match created before this was
+  // weighted as if it were a full game — a 30-minute kickabout moved Elo as much as
+  // a league fixture. The fixture generator has always set these; manual creation
+  // never could.
+  format: z.enum(['5-a-side', '7-a-side', '11-a-side']).optional(),
+  duration_minutes: z.number().int().min(1).max(180).optional(),
 })
 
 export async function matchesRoutes(app: FastifyInstance) {
@@ -65,6 +72,8 @@ export async function matchesRoutes(app: FastifyInstance) {
         scheduled_at: body.data.scheduled_at ? new Date(body.data.scheduled_at) : null,
         status: 'scheduled',
         tier,
+        format: body.data.format ?? null,
+        duration_minutes: body.data.duration_minutes ?? null,
         referee_id: request.userId,
       })
       .returningAll()

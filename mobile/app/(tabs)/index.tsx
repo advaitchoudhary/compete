@@ -29,6 +29,11 @@ function todayStr() {
 
 export default function FeedScreen() {
   const { user } = useAuthStore()
+  // Creating a match makes you its referee (POST /matches stamps referee_id from
+  // the caller), so the entry point has to match the endpoint's referee/admin gate.
+  // It was open to everyone, which meant a player filled the form, two orphan teams
+  // were created, and only then did the match POST 403.
+  const canCreateMatch = user?.role === 'referee' || user?.role === 'admin'
   const router = useRouter()
   const firstName = user?.name?.split(' ')[0] ?? 'Player'
 
@@ -80,10 +85,12 @@ export default function FeedScreen() {
           <Text style={s.eyebrow}>{timeGreeting()} · {todayStr()}</Text>
           <Text style={s.heroName}>Hey {firstName}.</Text>
           <Text style={s.heroSub}>Every match builds{'\n'}your legacy.</Text>
-          <TouchableOpacity style={s.cta} activeOpacity={0.88} onPress={() => router.push('/create-match')}>
-            <Text style={s.ctaText}>+ Create a Match</Text>
-            <Text style={s.ctaArrow}>→</Text>
-          </TouchableOpacity>
+          {canCreateMatch && (
+            <TouchableOpacity style={s.cta} activeOpacity={0.88} onPress={() => router.push('/create-match')}>
+              <Text style={s.ctaText}>+ Create a Match</Text>
+              <Text style={s.ctaArrow}>→</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Your form snapshot → tap to open the in-depth tracker */}

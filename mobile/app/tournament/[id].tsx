@@ -401,29 +401,23 @@ export default function TournamentDetailScreen() {
         {/* ── MATCHES SECTION ──────────────────────────────────── */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionLabel}>MATCHES</Text>
+          {/* Auto-generate only. "Add Match" used to sit here, but POST /matches
+              stamps the caller as referee_id — so an organizer adding a match by hand
+              became the referee of their own tournament's match, which is precisely
+              what the tier system exists to prevent (spec 3.1.1). It also 403'd,
+              since that endpoint is referee/admin. Generating fixtures assigns a
+              real referee per match instead. */}
           {isOrganizer && (
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity
-                style={s.sectionAction}
-                onPress={handleAutoGenerate}
-                disabled={autoGen.isPending}
-                activeOpacity={0.75}
-              >
-                <Text style={s.sectionActionText}>
-                  {autoGen.isPending ? '…' : '⚡ Auto-generate'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={s.sectionAction}
-                onPress={() => router.push({
-                  pathname: '/create-match',
-                  params: { event_id: id, sport: eventMeta.sport_slug },
-                })}
-                activeOpacity={0.75}
-              >
-                <Text style={s.sectionActionText}>+ Add Match</Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              style={s.sectionAction}
+              onPress={handleAutoGenerate}
+              disabled={autoGen.isPending}
+              activeOpacity={0.75}
+            >
+              <Text style={s.sectionActionText}>
+                {autoGen.isPending ? '…' : '⚡ Auto-generate'}
+              </Text>
+            </TouchableOpacity>
           )}
         </View>
 
@@ -431,33 +425,16 @@ export default function TournamentDetailScreen() {
           <View style={s.emptySection}>
             <Text style={s.emptyText}>No matches scheduled yet.</Text>
             {isOrganizer && (
-              <>
-                {/* Auto-generate is the primary action and adding matches by hand
-                    is the fallback, not the other way round. One press produces
-                    the whole bracket — rounds, kick-off times, pitches and a
-                    referee per match — where "Add Match" builds one fixture with
-                    none of that wiring. */}
-                <TouchableOpacity
-                  style={[s.limeCtaBtn, autoGen.isPending && { opacity: 0.5 }]}
-                  disabled={autoGen.isPending}
-                  onPress={handleAutoGenerate}
-                  activeOpacity={0.85}
-                >
-                  {autoGen.isPending
-                    ? <ActivityIndicator color={C.limeText} />
-                    : <Text style={s.limeCtaText}>⚡ Auto-generate fixtures →</Text>}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => router.push({
-                    pathname: '/create-match',
-                    params: { event_id: id, sport: eventMeta.sport_slug },
-                  })}
-                  activeOpacity={0.7}
-                  style={{ marginTop: 12 }}
-                >
-                  <Text style={s.secondaryLink}>or add a single match manually</Text>
-                </TouchableOpacity>
-              </>
+              <TouchableOpacity
+                style={[s.limeCtaBtn, autoGen.isPending && { opacity: 0.5 }]}
+                disabled={autoGen.isPending}
+                onPress={handleAutoGenerate}
+                activeOpacity={0.85}
+              >
+                {autoGen.isPending
+                  ? <ActivityIndicator color={C.limeText} />
+                  : <Text style={s.limeCtaText}>⚡ Auto-generate fixtures →</Text>}
+              </TouchableOpacity>
             )}
           </View>
         ) : (
