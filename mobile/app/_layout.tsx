@@ -97,6 +97,9 @@ function AuthGuard() {
       <Stack.Screen name="organizer/referees/[id]"  options={{ animation: 'slide_from_right' }} />
       {/* Squad registration — reached from the public link's "Enter your team". */}
       <Stack.Screen name="register-team/[id]"        options={{ animation: 'slide_from_right' }} />
+      {/* Pickup games — the weekly kickabout beside the occasional tournament. */}
+      <Stack.Screen name="create-game"               options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+      <Stack.Screen name="organizer/game/[id]"       options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
       {/* Public, unauthenticated tournament page — shared with spectators. */}
       <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />

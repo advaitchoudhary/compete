@@ -6,6 +6,7 @@
  * "which of my events still needs something from me before Sunday", so each row
  * leads with the next action rather than with metadata.
  */
+import { useState } from 'react'
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
@@ -59,15 +60,59 @@ function nextAction(e: OrgEvent): { text: string; urgent: boolean } {
   return { text: 'Generate fixtures', urgent: true }
 }
 
-export default function MyTournamentsScreen() {
+type PickupGame = {
+  id: string
+  name: string
+  status: string
+  city: string
+  venue: string | null
+  starts_at: string | null
+  players_per_side: number | null
+  match_duration_minutes: number | null
+  sport_slug: string
+  confirmed_count: number
+  waitlist_count: number
+  capacity: number
+}
+
+/** What a pickup game still needs from its organizer, in the order it needs it. */
+function gameNextAction(g: PickupGame): { text: string; urgent: boolean } {
+  if (g.status === 'cancelled') return { text: 'Cancelled', urgent: false }
+  if (g.status === 'completed') return { text: 'View result', urgent: false }
+  if (g.status === 'active') return { text: 'Sides drawn — match ready', urgent: false }
+  const short = g.capacity - g.confirmed_count
+  if (short > 0) {
+    return {
+      text: `${short} more player${short === 1 ? '' : 's'} needed`,
+      urgent: false,
+    }
+  }
+  return { text: 'Full — assign a referee and draw', urgent: true }
+}
+
+const MODES = ['Pickup games', 'Tournaments'] as const
+
+export default function OrganizerHubScreen() {
   const router = useRouter()
+  // Two jobs, and a turf owner does far more of the first: tournaments are
+  // occasional, a kickabout is weekly. Pickup leads.
+  const [mode, setMode] = useState<(typeof MODES)[number]>('Pickup games')
 
   const { data, isLoading, error } = useQuery<{ items: OrgEvent[] }>({
     queryKey: ['organizer', 'events'],
     queryFn: async () => (await api.get('/organizer/events')).data,
+    enabled: mode === 'Tournaments',
+  })
+
+  const { data: gameData, isLoading: gamesLoading } = useQuery<{ items: PickupGame[] }>({
+    queryKey: ['organizer', 'games'],
+    queryFn: async () => (await api.get('/games')).data,
+    enabled: mode === 'Pickup games',
   })
 
   const events = data?.items ?? []
+  const games = gameData?.items ?? []
+  const isPickup = mode === 'Pickup games'
 
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
@@ -77,14 +122,99 @@ export default function MyTournamentsScreen() {
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={s.eyebrow}>ORGANIZER</Text>
-          <Text style={s.title}>My Tournaments</Text>
+          <Text style={s.title}>{isPickup ? 'Pickup games' : 'Tournaments'}</Text>
         </View>
-        <TouchableOpacity style={s.newBtn} onPress={() => router.push('/create-tournament')} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={s.newBtn}
+          onPress={() => router.push(isPickup ? '/create-game' : '/create-tournament')}
+          activeOpacity={0.8}
+        >
           <Text style={s.newBtnText}>+ New</Text>
         </TouchableOpacity>
       </View>
 
+      <View style={s.modeRow}>
+        {MODES.map(m => (
+          <TouchableOpacity
+            key={m}
+            style={[s.modePill, mode === m && s.modePillOn]}
+            onPress={() => setMode(m)}
+            activeOpacity={0.85}
+          >
+            <Text style={[s.modeText, mode === m && { color: C.limeText }]}>{m}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+        {isPickup ? (
+          <>
+            {gamesLoading && <View style={s.center}><ActivityIndicator color={C.lime} /></View>}
+
+            {!gamesLoading && games.length === 0 && (
+              <View style={s.empty}>
+                <Text style={s.emptyEmoji}>⚽</Text>
+                <Text style={s.emptyTitle}>No games yet</Text>
+                <Text style={s.emptyBody}>
+                  Set a format, share the link, and let people put their own names down.
+                  When it fills, the sides are drawn balanced on rating.
+                </Text>
+                <TouchableOpacity style={s.emptyBtn} onPress={() => router.push('/create-game')} activeOpacity={0.85}>
+                  <Text style={s.emptyBtnText}>Create a pickup game</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {games.map(g => {
+              const st = STATUS_STYLE[g.status] ?? STATUS_STYLE.upcoming
+              const action = gameNextAction(g)
+              const pct = g.capacity > 0 ? Math.min(g.confirmed_count / g.capacity, 1) : 0
+              return (
+                <TouchableOpacity
+                  key={g.id}
+                  style={s.card}
+                  activeOpacity={0.85}
+                  onPress={() => router.push(`/organizer/game/${g.id}`)}
+                >
+                  <View style={s.cardTop}>
+                    <View style={[s.statusDot, { backgroundColor: st.color }]} />
+                    <Text style={[s.statusText, { color: st.color }]}>{st.label}</Text>
+                    <View style={{ flex: 1 }} />
+                    <Text style={s.formatChip}>
+                      {g.players_per_side}v{g.players_per_side}
+                    </Text>
+                  </View>
+
+                  <Text style={s.cardName}>{g.name}</Text>
+                  <Text style={s.cardMeta}>
+                    {g.venue ? `${g.venue} · ` : ''}{g.city}
+                    {g.match_duration_minutes ? ` · ${g.match_duration_minutes}m` : ''}
+                  </Text>
+
+                  {/* How full it is, which is the only number that matters until
+                      it is full. */}
+                  <View style={s.fillRow}>
+                    <Text style={s.fillCount}>
+                      {g.confirmed_count}<Text style={s.fillMax}>/{g.capacity}</Text>
+                    </Text>
+                    <View style={s.track}>
+                      <View style={[s.trackFill, { width: `${pct * 100}%` }]} />
+                    </View>
+                    {g.waitlist_count > 0 && (
+                      <Text style={s.waitCount}>+{g.waitlist_count} waiting</Text>
+                    )}
+                  </View>
+
+                  <View style={[s.actionRow, action.urgent && { backgroundColor: C.limeGlow }]}>
+                    <Text style={[s.actionText, action.urgent && { color: C.lime }]}>{action.text}</Text>
+                    <Text style={[s.actionArrow, action.urgent && { color: C.lime }]}>→</Text>
+                  </View>
+                </TouchableOpacity>
+              )
+            })}
+          </>
+        ) : (
+        <>
         {isLoading && (
           <View style={s.center}><ActivityIndicator color={C.lime} /></View>
         )}
@@ -149,6 +279,8 @@ export default function MyTournamentsScreen() {
             </TouchableOpacity>
           )
         })}
+        </>
+        )}
       </ScrollView>
     </SafeAreaView>
   )
@@ -184,6 +316,22 @@ const s = StyleSheet.create({
     paddingHorizontal: SPACE.lg, paddingVertical: SPACE.sm,
   },
   newBtnText: { color: C.limeText, fontSize: 13, fontFamily: FONT.bold },
+
+  modeRow: { flexDirection: 'row', gap: SPACE.sm, paddingHorizontal: SPACE.lg, paddingBottom: SPACE.md },
+  modePill: {
+    flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: RADIUS.pill,
+    backgroundColor: C.s2, borderWidth: 1, borderColor: C.b1,
+  },
+  modePillOn: { backgroundColor: C.lime, borderColor: C.lime },
+  modeText: { color: C.t2, fontSize: 12, fontFamily: FONT.bold },
+
+  formatChip: { color: C.t2, fontSize: 11, fontFamily: FONT.bold, letterSpacing: 0.5 },
+  fillRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, marginBottom: SPACE.md },
+  fillCount: { color: C.t1, fontSize: 17, fontFamily: FONT.black },
+  fillMax: { color: C.t3, fontSize: 12, fontFamily: FONT.medium },
+  track: { flex: 1, height: 5, backgroundColor: C.s3, borderRadius: 3, overflow: 'hidden' },
+  trackFill: { height: 5, backgroundColor: C.lime, borderRadius: 3 },
+  waitCount: { color: C.amber, fontSize: 11, fontFamily: FONT.bold },
 
   center: { paddingVertical: SPACE.xxxl, alignItems: 'center' },
   err: { color: C.red, fontSize: 14, fontFamily: FONT.medium },
