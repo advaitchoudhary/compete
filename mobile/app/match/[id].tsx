@@ -11,7 +11,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   ScrollView, View, Text, StyleSheet, Image,
-  TouchableOpacity, ActivityIndicator, RefreshControl,
+  TouchableOpacity, ActivityIndicator, RefreshControl, Share, Platform,
 } from 'react-native'
 import { confirm, notify } from '../../src/lib/dialog'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -21,6 +21,7 @@ import { useAuthStore } from '../../src/store/auth.store'
 import { api } from '../../src/api/client'
 import { C, SPORT } from '../../src/theme'
 import RefereeScorecard from '../../src/screens/Match/RefereeScorecard'
+import TournamentScorecard from '../../src/screens/Match/TournamentScorecard'
 import RatingOverride from '../../src/screens/Match/RatingOverride'
 import type { MatchDetail } from '../../src/types/tournament'
 
@@ -92,8 +93,46 @@ const sc = StyleSheet.create({
 const DEFAULT_AVATAR = (name?: string) =>
   `https://ui-avatars.com/api/?background=1f2937&color=fff&bold=true&name=${encodeURIComponent(name || 'Player')}`
 
-function PlayerStatRow({ stat, sportColor }: { stat: any; sportColor: string }) {
-  const keys = Object.keys(stat.stats ?? {}).slice(0, 4)
+/**
+ * Colour per stat so a contribution is visible at a glance. A referee scanning
+ * fourteen rows should not have to read "0 goals" and "1 goals" to tell them
+ * apart — they were previously the same dim grey chip.
+ */
+const STAT_COLOR: Record<string, string> = {
+  goals: C.lime,
+  assists: C.blue,
+  saves: C.amber,
+  clean_sheet: C.green,
+  tackles: C.indigo,
+  interceptions: C.indigo,
+  shots_on_target: C.purple,
+}
+
+/** "1 goals" reads like a bug. Only touches the plain trailing -s. */
+const statLabel = (key: string, value: unknown) => {
+  const words = key.replace(/_/g, ' ')
+  return Number(value) === 1 && words.endsWith('s') ? words.slice(0, -1) : words
+}
+
+const isContribution = (v: unknown) => v === true || (typeof v === 'number' && v > 0)
+
+function PlayerStatRow({
+  stat, sportColor, onSendClaimLink, sending,
+}: {
+  stat: any
+  sportColor: string
+  onSendClaimLink?: (userId: string, name: string) => void
+  sending?: boolean
+}) {
+  // Only an unclaimed guest has anything to claim. Someone who already owns their
+  // profile must not be offered a link that would 409.
+  const claimable = Boolean(onSendClaimLink && stat.is_guest && !stat.claimed_at)
+  const stats: Record<string, unknown> = stat.stats ?? {}
+  // Non-zero first, so the four we show are the four that say something. Sorting
+  // after slicing would have let a lone goal fall off the end of a long stat line.
+  const keys = Object.keys(stats)
+    .sort((a, b) => Number(isContribution(stats[b])) - Number(isContribution(stats[a])))
+    .slice(0, 4)
   const avatarUri = stat.avatar_url || DEFAULT_AVATAR(stat.name)
 
   return (
@@ -103,14 +142,34 @@ function PlayerStatRow({ stat, sportColor }: { stat: any; sportColor: string }) 
         <Text style={ps.name}>{stat.name ?? '—'}</Text>
         {keys.length > 0 && (
           <View style={ps.statChips}>
-            {keys.map(k => (
-              <View key={k} style={ps.chip}>
-                <Text style={ps.chipText}>{stat.stats[k]} {k.replace(/_/g, ' ')}</Text>
-              </View>
-            ))}
+            {keys.map(k => {
+              const value = stats[k]
+              const on = isContribution(value)
+              const color = STAT_COLOR[k] ?? C.lime
+              return (
+                <View
+                  key={k}
+                  style={[ps.chip, on && { backgroundColor: color + '22', borderColor: color + '66' }]}
+                >
+                  <Text style={[ps.chipText, on && { color, fontWeight: '800' }]}>
+                    {value === true ? '' : `${value} `}{statLabel(k, value)}
+                  </Text>
+                </View>
+              )
+            })}
           </View>
         )}
       </View>
+      {claimable && (
+        <TouchableOpacity
+          style={ps.claimBtn}
+          onPress={() => onSendClaimLink!(stat.user_id, stat.name)}
+          disabled={sending}
+          activeOpacity={0.8}
+        >
+          <Text style={ps.claimBtnText}>{sending ? '…' : 'Send link'}</Text>
+        </TouchableOpacity>
+      )}
       {stat.match_rating != null && (
         <Text style={[ps.rating, { color: sportColor }]}>
           {Number(stat.match_rating).toFixed(2)}
@@ -126,9 +185,15 @@ const ps = StyleSheet.create({
   info:     { flex: 1, gap: 4 },
   name:     { color: C.t1, fontSize: 14, fontWeight: '600' },
   statChips:{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  chip:     { backgroundColor: C.s3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2 },
+  chip:     { backgroundColor: C.s3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2,
+              borderWidth: 1, borderColor: 'transparent' },
   chipText: { color: C.t3, fontSize: 10, fontWeight: '600' },
   rating:   { fontSize: 20, fontWeight: '900', letterSpacing: -0.5 },
+  claimBtn: {
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
+    borderWidth: 1, borderColor: C.lime + '77', backgroundColor: C.lime + '18',
+  },
+  claimBtnText: { color: C.lime, fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
 })
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -138,6 +203,46 @@ export default function MatchDetailScreen() {
   const router = useRouter()
   const queryClient = useQueryClient()
   const { user } = useAuthStore()
+  const [sendingClaim, setSendingClaim] = useState<string | null>(null)
+
+  /**
+   * Mint a claim link for a guest and hand it straight to WhatsApp.
+   *
+   * This is the moment that matters for the growth loop: the match has just been
+   * rated, the guest is standing right there, and their captain or the referee has
+   * their number. Until now the endpoint existed with nothing calling it, so a
+   * guest's rating was unreachable unless someone ran curl.
+   *
+   * Native gets the OS share sheet (WhatsApp in one tap); web has no share sheet
+   * worth using, so it copies instead.
+   */
+  const sendClaimLink = async (userId: string, name: string) => {
+    setSendingClaim(userId)
+    try {
+      const res = await api.post(`/guests/${userId}/claim-link`, {})
+      const url: string = res.data.claim_url
+      const message =
+        `${name} — you played today and you've been rated on every match. ` +
+        `Claim your AllSports profile to keep it: ${url}`
+
+      if (Platform.OS === 'web') {
+        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+          await navigator.clipboard.writeText(message)
+          notify('Link copied', `Paste it to ${name} on WhatsApp.\n\n${url}`)
+        } else {
+          notify(`Claim link for ${name}`, url)
+        }
+      } else {
+        await Share.share({ message })
+      }
+      // The guest is unchanged until they actually claim, so nothing to refetch.
+    } catch (e: any) {
+      const err = e?.response?.data?.error
+      notify("Couldn't create the link", typeof err === 'string' ? err : (e?.message ?? 'Failed'))
+    } finally {
+      setSendingClaim(null)
+    }
+  }
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
@@ -251,6 +356,11 @@ export default function MatchDetailScreen() {
   const isCompleted = match.status === 'completed'
   const hasScore    = match.home_score != null || match.away_score != null
   const isReferee   = !!user && (user.id === match.referee_id || (user as any).role === 'admin')
+  // Roles the backend lets mint a claim link and that we can identify from the
+  // session alone. Captains qualify too but the match payload doesn't say who
+  // captains which team — see the note at the call site.
+  const canSendClaimLinks =
+    user?.role === 'referee' || user?.role === 'organizer' || user?.role === 'admin'
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
@@ -373,7 +483,17 @@ export default function MatchDetailScreen() {
                   <Text style={[s.teamStatsHeader, { color: spCfg.color }]}>{team.name}</Text>
                   <View style={s.statsCard}>
                     {teamStats.map((stat, i) => (
-                      <PlayerStatRow key={stat.user_id ?? i} stat={stat} sportColor={spCfg.color} />
+                      <PlayerStatRow
+                        key={stat.user_id ?? i}
+                        stat={stat}
+                        sportColor={spCfg.color}
+                        // Captains may also mint links, but the match payload does
+                        // not say who captains which team, so the button is shown
+                        // to the roles we can identify here. The backend is the
+                        // authority either way.
+                        onSendClaimLink={canSendClaimLinks ? sendClaimLink : undefined}
+                        sending={sendingClaim === stat.user_id}
+                      />
                     ))}
                   </View>
                 </View>
@@ -382,8 +502,31 @@ export default function MatchDetailScreen() {
           </>
         )}
 
-        {/* Referee scorecard — roster-based tap scoring (referee/admin only) */}
-        {(isLive || isScheduled) && sportSchema && isReferee && (
+        {/*
+          Scoring. A tournament match gets the fast, single-screen scorecard —
+          score → review → end — because a referee has ~90 seconds between
+          whistles across 16 matches. A standalone match keeps the detailed
+          scorecard plus the separate rating-override step, where there is time
+          to record every metric and set positions properly.
+        */}
+        {(isLive || isScheduled) && isReferee && match.event_id && (
+          <View style={{ marginHorizontal: 16, marginTop: 4 }}>
+            <TournamentScorecard
+              matchId={id}
+              tier={match.tier}
+              durationMinutes={match.duration_minutes}
+              homeTeamId={match.home_team_id}
+              awayTeamId={match.away_team_id}
+              homeTeamName={match.home_team_name}
+              awayTeamName={match.away_team_name}
+              savedHomeGoals={Number((match.home_score as any)?.goals ?? 0)}
+              savedAwayGoals={Number((match.away_score as any)?.goals ?? 0)}
+              onFinished={() => refetch()}
+            />
+          </View>
+        )}
+
+        {(isLive || isScheduled) && sportSchema && isReferee && !match.event_id && (
           <View style={{ marginHorizontal: 16, marginTop: 4 }}>
             <RefereeScorecard
               matchId={id}
@@ -398,8 +541,9 @@ export default function MatchDetailScreen() {
           </View>
         )}
 
-        {/* Rating override — referee's eye-test on the engine's suggestions (live only) */}
-        {isLive && isReferee && (
+        {/* Rating override — separate step for standalone matches only; the
+            tournament scorecard has it built into its review phase. */}
+        {isLive && isReferee && !match.event_id && (
           <View style={{ marginHorizontal: 16 }}>
             <RatingOverride
               matchId={id}

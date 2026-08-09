@@ -79,6 +79,42 @@ event_referees (event_id, user_id, pitch_label, added_at)
 
 `pitch_label` lets the generator keep a referee on one pitch all day.
 
+#### 3.1.1 Event tier authority — the anti-fraud mechanism
+
+**This is the single most load-bearing rule in the design.** Tier drives rating weight (amateur 1.0 → legends 3.0 in the blended overall Elo), so whoever controls tier controls the ladder.
+
+Today that authority sits entirely with referees: `matches.routes.ts:41-53` refuses to create a match above the creating referee's own `referee_tier` via `canOfficiate`. A referee cannot inflate beyond their verified standing.
+
+**Phase 3 would break this.** The fixture generator creates matches on the *organizer's* command, and organizers have no tier. Left unaddressed, an organizer could declare a `legends` tournament and inflate 80 players' ratings at 3.0× weight. Nothing is inflated today only because events have no tier at all.
+
+**Rule (decided 2026-07-29): an event's tier may not exceed the LOWEST `referee_tier` among its assigned referees.**
+
+Every match in a pro tournament must be officiated at pro level, so the weakest assigned referee constrains the whole tournament. This deliberately reuses the referee authority chain rather than inventing a new one, and it produces the right real-world gate: **to run a pro tournament you must recruit pro referees.**
+
+```
+events.tier  TEXT NOT NULL DEFAULT 'amateur'
+  CHECK (tier IN ('amateur','semi_pro','pro','legends'))
+```
+
+Defaulting to `amateur` means an unspecified tournament is always the lowest-weight one, never the highest — matching how `matches.tier` already behaves.
+
+**Three enforcement points, defence in depth:**
+
+1. **Setting the tier** (`PATCH /events/:id/tier`) — validated against the referees currently assigned.
+2. **Assigning referees** (`POST /events/:id/referees`) — rejected if the new roster would drop the floor below the event's current tier. Otherwise an organizer could set `pro` with pro referees, then swap them for amateurs.
+3. **Fixture generation** — every generated match is re-checked against its own assigned referee using the existing `canOfficiate`. This is the real guarantee: even if 1 and 2 were bypassed, no match can be created above its referee's standing.
+
+**Tier is not settable at creation.** An event has no referees yet at that moment, so `POST /events` always starts at `amateur`; raising it requires assigning qualifying referees first. This avoids a guaranteed-fail code path and teaches the model through use.
+
+**Tier freezes at fixture generation.** Once fixtures exist the tier is immutable, so an organizer cannot run an amateur tournament and re-declare it `legends` afterwards to retroactively reweight ratings already computed from it.
+
+**Edge cases:**
+- An event with **zero** assigned referees supports `amateur` only.
+- Assigned **admins** are treated as unrestricted and excluded from the floor calculation (they already bypass tier gating everywhere else).
+- A referee with a NULL `referee_tier` cannot officiate at all (`canOfficiate` returns false for null), so their presence holds the event at `amateur`.
+
+**Rejected alternative:** giving organizers their own `organizer_tier` ladder. It adds a second admin approval queue, and on its own it would still permit an amateur referee to officiate a pro match — so it is strictly weaker than this rule, not an alternative to it. It can be layered on later if organizers need tier standing independent of the referees they can book.
+
 ### 3.2 Team self-registration with guests
 
 Captains register their own teams via the event link. Guest players are the **primary** path here, not an edge case — expect 60%+ of a roster to be unregistered.
@@ -91,16 +127,56 @@ Registration is allowed only while `events.status = 'registration'` and while `c
 
 `POST /v1/events/:id/fixtures` — organizer-only, idempotent-guarded (refuses if fixtures already exist), runs in one transaction.
 
-**Supported formats:** `knockout` and `group_knockout` only. `league`/`round_robin` remain in the DB constraint but are rejected by this endpoint in Phase 1.
+**Supported formats:** `knockout` and `group_knockout`. `league`/`round_robin` remain in the DB constraint but are rejected by this endpoint.
 
-**Supported team counts:** exactly **8, 12 or 16**. Any other count is rejected with a clear error. This keeps group sizes equal and the bracket balanced without special-casing byes in Phase 1.
+**Team counts (decided 2026-07-31): no count is ever turned away.** A real turf tournament gets whatever turns up — nine teams, or five. An earlier draft restricted this to 8/12/16, which was a convenience, not a requirement.
 
-**Generation for 8 teams, `group_knockout`:**
-- 2 groups of 4, seeded by `event_teams.seed` (random when absent), snake-distributed across groups
-- Round-robin within each group: 6 matches per group = 12
-- Semi-finals (2), final (1), third-place (1) = 16 matches total
-- Time slots assigned round-robin across pitches. **Rest gap rule: a team must have at least one full slot free between its own matches.** Generation fails loudly rather than emitting a schedule that violates this.
-- Each fixture stamped with `referee_id` from `event_referees` for its pitch, plus `round`, `slot_no`, `pitch_label` and `scheduled_at`
+**`knockout` works for any N ≥ 2** via a play-in round, with byes to the top seeds:
+
+```
+P = largest power of two ≤ N
+play-in matches = N − P
+byes            = N − 2(N − P)
+```
+
+| N | Shape | Total matches |
+|---|---|---|
+| 5 | 1 play-in, 3 byes → semis → final | 4 |
+| 6 | 2 play-ins, 2 byes → semis → final | 5 |
+| 9 | 1 play-in, 7 byes → quarters → semis → final | 8 |
+
+**`group_knockout` requires EQUAL group sizes.** Groups of unequal size have played a different number of matches, so their points are not comparable — and filling a bracket needs a "best runner-up" comparison across groups. Real tournaments patch this with points-per-game or by discarding results against the bottom team; both are arbitrary and neither is explainable to a team that goes out on it. Requiring equal groups makes the comparison genuinely fair, so this constraint is a fairness property rather than a simplification.
+
+Group count targets groups of 4, falling back to 3: `G = ceil(N / 4)`, accepted only if `N % G == 0`.
+
+| N | Groups | Qualify | Total matches |
+|---|---|---|---|
+| 6 | 2 × 3 | top 2 → semis | 6 + 3 = 9 |
+| 8 | 2 × 4 | top 2 → semis | 12 + 3 = 15 |
+| 9 | 3 × 3 | 3 winners + best runner-up → semis | 9 + 3 = 12 |
+| 12 | 3 × 4 | 3 winners + best runner-up → semis | 18 + 3 = 21 |
+| 16 | 4 × 4 | top 2 → quarters | 24 + 7 = 31 |
+
+Qualifier count is the largest power of two that is ≤ `2 × G` and ≤ `N`, minimum 2.
+
+**When N cannot form equal groups** (a prime count such as 5, 7, 11, 13) the endpoint does **not** fail — it generates a `knockout` instead and says so in the response, so the organizer understands why their bracket looks different.
+
+**Seeding:** by `event_teams.seed` where set, otherwise random, snake-distributed across groups so seeds spread rather than cluster.
+
+**No third-place match** (decided 2026-07-31): losing semi-finalists go home. One less match and a shorter day.
+
+**Points:** 3 for a win, 1 for a draw, 0 for a loss. Group matches may be drawn. **Knockout matches must be decisive** — the referee records the penalty result as the final score; there is no shootout modelling.
+
+**Scheduling inputs** (decided 2026-07-31), so the generator can assign `scheduled_at`:
+- **Pitch count** = the number of distinct `pitch_label` values on `event_referees`. Derived rather than stored, so it can never disagree with the referees actually assigned.
+- **Slot length** = new `events.match_duration_minutes` column, which Phase 4 also needs for rating match-weight.
+- **Kickoff** = the existing `events.starts_at`.
+
+Slots are assigned round-robin across pitches. **Rest gap rule: a team must have at least one full slot free between its own matches.** Generation fails loudly rather than emitting a schedule that violates it.
+
+Each fixture is stamped with `referee_id` from `event_referees` for its pitch, plus `round`, `slot_no`, `pitch_label` and `scheduled_at`.
+
+**Regeneration** (decided 2026-07-31): permitted while **every** match for the event is still `scheduled` — it deletes those matches and all fixtures, then rebuilds. Once any match has started or completed, generation is final. This resolves a contradiction in an earlier draft, which promised re-seeding "by deleting fixtures with a NULL `match_id`" while also creating `matches` rows for every group fixture immediately, leaving nothing deletable. Teams withdrawing an hour before kickoff is normal at these events, so a recovery path is required.
 
 **Progression — the `event_fixtures` model.**
 
@@ -138,7 +214,9 @@ event_fixtures (
 
 **Lifecycle.** The generator creates all 16 fixtures in one transaction. Group fixtures already know both teams, so they immediately create their `matches` rows and set `match_id`. Knockout fixtures sit with `match_id` NULL. When a match completes, `finalizeMatch()` calls a **resolver** that finds fixtures whose sources are now satisfied, fills their team ids, creates the real `matches` row, and links it.
 
-Whenever the resolver (or the generator) creates a `matches` row it copies across: `event_id`, `round`, `referee_id`, `scheduled_at`, `venue`, plus `tier` from the event and `format` / `duration_minutes` from the event's `rules`. The last two are what §3.5 needs to weight the rating correctly, so they must be stamped at creation, not backfilled.
+Whenever the resolver (or the generator) creates a `matches` row it copies across: `event_id`, `round`, `referee_id`, `scheduled_at`, `venue`, plus `tier` from `events.tier` and `format` / `duration_minutes` from `events.match_format` and `events.match_duration_minutes`. The last two are what §3.5 needs to weight the rating correctly, so they must be stamped at creation, not backfilled.
+
+**Every created match must pass `canOfficiate(assignedReferee.referee_tier, match.tier)` — the third and final enforcement point of §3.1.1.** If any generated match would exceed its assigned referee's standing, the whole generation transaction is refused with an error naming the referee and the tier. This is what makes tier inflation impossible even if the earlier checks were bypassed, so it is a hard requirement of the generator, not a nicety.
 
 **Why a separate table rather than nullable columns.** A *fixture* is a slot in a competition structure; a *match* is a game between two known teams. They have genuinely different lifecycles — group fixtures resolve instantly, knockout fixtures resolve across six hours — and conflating them is what forces the nullable columns.
 
@@ -269,16 +347,20 @@ Guests are excluded from all push (no app, no token) — they receive the WhatsA
 
 ## 4. Migrations
 
-| # | File | Contents |
-|---|---|---|
-| 009 | `009_organizer_role.sql` | `users.role` += `organizer`; `referee_applications.request_type` += `organizer` |
-| 010 | `010_event_referees.sql` | `event_referees` table |
-| 011 | `011_event_standings.sql` | `event_teams` += `played, won, drawn, lost, goals_for, goals_against` |
-| 012 | `012_event_fixtures.sql` | `event_fixtures` table (bracket structure + source resolution + `match_id` link) |
-| 013 | `013_match_format.sql` | `matches` += `format`, `duration_minutes` |
-| 014 | `014_push_notifications.sql` | `push_tokens`, `notifications` tables |
+| # | Phase | File | Contents |
+|---|---|---|---|
+| 009 | 1 ✅ | `009_organizer_role.sql` | `users.role` += `organizer`; `referee_applications.request_type` += `organizer` |
+| 010 | 1 ✅ | `010_event_referees.sql` | `event_referees` table |
+| 011 | 2 | `011_event_tier_and_format.sql` | `events` += `tier` (NOT NULL DEFAULT `'amateur'`, see §3.1.1), `match_format` |
+| 012 | 3 | `012_event_match_duration.sql` | `events` += `match_duration_minutes` (slot length; Phase 4 needs it too) |
+| 013 | 3 | `013_event_standings.sql` | `event_teams` += `played, won, drawn, lost, goals_for, goals_against` |
+| 014 | 3 | `014_event_fixtures.sql` | `event_fixtures` table (bracket structure + source resolution + `match_id` link) |
+| 015 | 4 | `015_match_duration.sql` | `matches` += `format`, `duration_minutes` |
+| 016 | 7 | `016_push_notifications.sql` | `push_tokens`, `notifications` tables |
 
-**No migration alters `matches` team columns.** The only change to `matches` is migration 013, which adds two nullable columns — additive and safe. This is a deliberate revision: an earlier draft made `home_team_id`/`away_team_id` nullable and was rejected once the blast radius was measured (see §3.3).
+**No migration alters `matches` team columns.** The only change to `matches` is migration 015, which adds two nullable columns — additive and safe. This is a deliberate revision: an earlier draft made `home_team_id`/`away_team_id` nullable and was rejected once the blast radius was measured (see §3.3).
+
+**Numbering note:** an earlier draft assigned `011` to standings. `011` is now the Phase 2 events migration, and everything after it shifted by one. `match_format` and `duration_minutes` become real columns rather than living inside the `events.rules` JSON blob as originally sketched — validated, typed and queryable.
 
 ---
 
@@ -295,8 +377,9 @@ Guests are excluded from all push (no app, no token) — they receive the WhatsA
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `POST /v1/organizer/apply` | player | Apply to become an organizer (reuses `referee_applications`) |
-| `POST /v1/events/:id/referees` | organizer | Assign approved referees + pitch labels |
+| `POST /v1/events/:id/referees` | organizer | Assign approved referees + pitch labels. **Rejected if the new roster no longer supports the event's tier** (§3.1.1) |
 | `GET /v1/events/:id/referees` | organizer | List them |
+| `PATCH /v1/events/:id/tier` | organizer | Set the event's tier. Capped by the lowest assigned `referee_tier`; frozen once fixtures exist (§3.1.1) |
 | `POST /v1/events/:id/register` | captain | Register a team with a roster incl. guests |
 | `POST /v1/events/:id/fixtures` | organizer | Generate the full day's fixtures |
 | `GET /v1/events/:id/fixtures` | any auth | Bracket + standings |
@@ -330,6 +413,7 @@ The existing admin approve/reject endpoints extend to flip `role` to `organizer`
 - **Standings** — table maths and the full tie-break chain, including a two-way head-to-head tie and a three-way tie falling back to seed order.
 - **Isolation guarantee** — with unresolved fixtures present in an event, `GET /matches`, `GET /matches/:id` and the rating consumer behave exactly as before. This is the test that proves the `event_fixtures` choice paid off.
 - **Rating weight** — a null `duration_minutes` reproduces today's Elo deltas exactly (backwards-compatibility guard); a 12-minute match produces a delta at the floor weight.
+- **Tier authority (§3.1.1)** — the highest-value tests in this design. An event with no referees accepts only `amateur`; raising the tier above the lowest assigned `referee_tier` is refused; swapping in a lower-tier referee after setting a high tier is refused; the generator refuses to create any match exceeding its assigned referee's standing; and the tier cannot be changed once fixtures exist.
 - **Override ordering** — the per-match review must happen before completion: a referee value within ±4 is accepted while the match is live, the same call returns 409 once the match is `completed`, an out-of-range value is rejected, and the Elo consumer uses the referee's saved star rather than the algorithm's suggestion.
 - **Guest claim** — claiming carries all rating history over; a second claim with the same token fails.
 - **End-to-end** — seed an 8-team event, register teams with guests, generate, score all 16 matches, assert standings, bracket, ratings and the public payload.

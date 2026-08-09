@@ -4,31 +4,116 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform,
   ActivityIndicator, Alert,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import { useAuthStore } from '../src/store/auth.store'
 import { api } from '../src/api/client'
 import { C, FONT, SPACE, RADIUS, ELEV } from '../src/theme'
 import { notify } from '../src/lib/dialog'
+import {
+  sendOtp, phoneAuthMessage, toE164, isPhoneAuthSupported,
+  normalisePhoneInput, isCompletePhone, LOCAL_PHONE_DIGITS,
+  type PendingVerification,
+} from '../src/lib/phone-auth'
 
 // Dev quick-login presets → /auth/dev-token bodies
 const ROLES = [
-  { key: 'p05',    role: undefined,   label: 'Player',  who: 'Devansh · rated',  accent: C.lime,  emoji: '⚽' },
-  { key: 'ref',    role: 'referee',   label: 'Referee', who: 'Vikram · officiator', accent: C.blue, emoji: '🦓' },
-  { key: 'ranjit', role: 'admin',     label: 'Admin',   who: 'Ranjit · you',     accent: C.gold,  emoji: '🛡️' },
+  { key: 'p05',    role: undefined,     label: 'Player',    who: 'Devansh · rated',        accent: C.lime,   emoji: '⚽' },
+  { key: 'org',    role: 'organizer',   label: 'Organizer', who: 'Rohan · runs tournaments', accent: C.orange, emoji: '🏟️' },
+  { key: 'ref',    role: 'referee',     label: 'Referee',   who: 'Vikram · officiator',    accent: C.blue,   emoji: '🦓' },
+  { key: 'ranjit', role: 'admin',       label: 'Admin',     who: 'Ranjit · you',           accent: C.gold,   emoji: '🛡️' },
 ] as const
 
 export default function AuthScreen() {
   const router = useRouter()
+  // Set when a visitor arrived from the public tournament link wanting to enter a
+  // team. Without it they'd land on the home tab after signing in and have to find
+  // the tournament again, which is where that intent goes to die.
+  const { next } = useLocalSearchParams<{ next?: string }>()
   const { setAuth } = useAuthStore()
   const [phone, setPhone] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
 
+  // Phone sign-in is two steps on one screen: the number, then the code. Kept as
+  // a single screen so the number stays visible while the SMS is being read off
+  // the notification shade.
+  const [pending, setPending] = useState<PendingVerification | null>(null)
+  const [code, setCode] = useState('')
+
+  // Set when the phone is verified but no account exists yet. The ID token is
+  // held so the name can be collected and the same token re-submitted — Firebase
+  // tokens are not single-use, and re-verifying would mean a second SMS.
+  const [signupToken, setSignupToken] = useState<string | null>(null)
+  const [signupName, setSignupName] = useState('')
+
+  /** Exchange a verified Firebase token for a session, or ask for a name first. */
+  const finishSignIn = async (idToken: string, name?: string) => {
+    try {
+      const res = await api.post('/auth/verify', {
+        firebase_id_token: idToken,
+        ...(name ? { name } : {}),
+      })
+      setAuth(res.data.access_token, res.data.user)
+      router.replace('/(tabs)')
+      return
+    } catch (e: any) {
+      // Branch on the code, never the prose.
+      if (e?.response?.data?.code === 'NAME_REQUIRED') {
+        setSignupToken(idToken)
+        return
+      }
+      const server = e?.response?.data?.error
+      notify('Could not sign in', typeof server === 'string' ? server : phoneAuthMessage(e))
+    }
+  }
+
+  const requestOtp = async () => {
+    setBusy('otp')
+    try {
+      setPending(await sendOtp(phone))
+    } catch (e) {
+      notify('Could not send the code', phoneAuthMessage(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const confirmOtp = async () => {
+    if (!pending) return
+    setBusy('confirm')
+    try {
+      const idToken = await pending.confirm(code.trim())
+      // The backend resolves this to the existing account by verified phone, so a
+      // seeded organizer signing in here lands on their own profile, not a new one.
+      // A number with no account comes back asking for a name.
+      await finishSignIn(idToken)
+    } catch (e: any) {
+      notify('Could not sign in', phoneAuthMessage(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const completeSignup = async () => {
+    if (!signupToken) return
+    setBusy('signup')
+    try {
+      await finishSignIn(signupToken, signupName.trim())
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const devLogin = async (preset: (typeof ROLES)[number]) => {
     setBusy(preset.key)
     try {
-      const res = await api.post('/auth/dev-token', { key: preset.key, role: preset.role })
+      const res = await api.post('/auth/dev-token', {
+        key: preset.key,
+        role: preset.role,
+        // Name the seeded account so it is recognisable rather than "Dev <key>".
+        name: preset.who.split(' · ')[0],
+      })
       setAuth(res.data.access_token, res.data.user)
-      router.replace('/(tabs)')
+      router.replace((next ?? '/(tabs)') as any)
     } catch (e: any) {
       notify('Error', e?.response?.data?.error ?? 'Login failed')
     } finally {
@@ -47,7 +132,7 @@ export default function AuthScreen() {
         <Text style={s.tagline}>Track · Compete · Get Rated</Text>
       </View>
 
-      {/* phone (real auth — coming soon) */}
+      {/* phone sign-in */}
       <View style={s.form}>
         <Text style={s.label}>MOBILE NUMBER</Text>
         <View style={s.phoneRow}>
@@ -57,15 +142,102 @@ export default function AuthScreen() {
             placeholder="98765 43210"
             placeholderTextColor={C.t3}
             keyboardType="phone-pad"
-            maxLength={10}
             value={phone}
-            onChangeText={setPhone}
+            onChangeText={(v) => {
+              setPhone(normalisePhoneInput(v))
+              setPending(null)
+              setCode('')
+            }}
+            editable={!pending}
           />
         </View>
-        <TouchableOpacity style={[s.btnPrimary, { opacity: phone.length === 10 ? 1 : 0.35 }]} disabled>
-          <Text style={s.btnPrimaryText}>Send OTP</Text>
-          <Text style={s.btnPrimarySub}>Firebase phone auth · coming soon</Text>
-        </TouchableOpacity>
+
+        {signupToken ? (
+          /* First sign-in from this number: the phone is already verified, we just
+             need something to call them. Kept as its own step rather than asked up
+             front, so a returning user never sees it. */
+          <>
+            <View style={s.welcomeBox}>
+              <Text style={s.welcomeTitle}>Welcome to AllSports</Text>
+              <Text style={s.welcomeBody}>
+                {toE164(phone)} is verified. What should we call you?
+              </Text>
+            </View>
+            <Text style={s.label}>YOUR NAME</Text>
+            <TextInput
+              style={s.phoneInput}
+              placeholder="e.g. Advait Choudhary"
+              placeholderTextColor={C.t3}
+              value={signupName}
+              onChangeText={setSignupName}
+              maxLength={80}
+              autoFocus
+              autoCapitalize="words"
+            />
+            <TouchableOpacity
+              style={[s.btnPrimary, signupName.trim().length < 2 && { opacity: 0.35 }]}
+              disabled={signupName.trim().length < 2 || !!busy}
+              onPress={completeSignup}
+              activeOpacity={0.85}
+            >
+              {busy === 'signup'
+                ? <ActivityIndicator color={C.limeText} />
+                : <Text style={s.btnPrimaryText}>Create my profile</Text>}
+            </TouchableOpacity>
+            <Text style={s.hintText}>
+              Teammates will see this name on scorecards and the leaderboard.
+            </Text>
+          </>
+        ) : !pending ? (
+          <TouchableOpacity
+            style={[s.btnPrimary, (!isCompletePhone(phone) || !isPhoneAuthSupported) && { opacity: 0.35 }]}
+            disabled={!isCompletePhone(phone) || !!busy || !isPhoneAuthSupported}
+            onPress={requestOtp}
+            activeOpacity={0.85}
+          >
+            {busy === 'otp'
+              ? <ActivityIndicator color={C.limeText} />
+              : <>
+                  <Text style={s.btnPrimaryText}>Send OTP</Text>
+                  <Text style={s.btnPrimarySub}>
+                    {!isPhoneAuthSupported
+                      ? 'Needs a custom dev build on this platform'
+                      : isCompletePhone(phone)
+                        ? `We'll text ${toE164(phone)}`
+                        : `${LOCAL_PHONE_DIGITS - phone.length} more digit${
+                            LOCAL_PHONE_DIGITS - phone.length === 1 ? '' : 's'
+                          }`}
+                  </Text>
+                </>}
+          </TouchableOpacity>
+        ) : (
+          <>
+            <Text style={s.label}>ENTER THE 6-DIGIT CODE</Text>
+            <TextInput
+              style={s.codeInput}
+              placeholder="––––––"
+              placeholderTextColor={C.t3}
+              keyboardType="number-pad"
+              maxLength={6}
+              value={code}
+              onChangeText={setCode}
+              autoFocus
+            />
+            <TouchableOpacity
+              style={[s.btnPrimary, code.length < 6 && { opacity: 0.35 }]}
+              disabled={code.length < 6 || !!busy}
+              onPress={confirmOtp}
+              activeOpacity={0.85}
+            >
+              {busy === 'confirm'
+                ? <ActivityIndicator color={C.limeText} />
+                : <Text style={s.btnPrimaryText}>Verify & sign in</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { setPending(null); setCode('') }} activeOpacity={0.7}>
+              <Text style={s.changeNumber}>← Use a different number</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
         <View style={s.dividerRow}>
           <View style={s.dividerLine} />
@@ -138,6 +310,20 @@ const s = StyleSheet.create({
   },
   btnPrimaryText: { color: C.limeText, fontFamily: FONT.bold, fontSize: 16 },
   btnPrimarySub: { color: 'rgba(10,15,0,0.55)', fontSize: 11, fontFamily: FONT.medium, marginTop: 2 },
+  codeInput: {
+    backgroundColor: C.s1, borderRadius: RADIUS.md, paddingHorizontal: 16, paddingVertical: 14,
+    color: C.t1, fontSize: 26, fontFamily: FONT.black, borderWidth: 1, borderColor: C.b1,
+    letterSpacing: 12, textAlign: 'center',
+    ...(({ outlineStyle: 'none' }) as object),
+  },
+  changeNumber: { color: C.t2, fontSize: 13, fontFamily: FONT.semibold, textAlign: 'center', paddingVertical: 6 },
+  welcomeBox: {
+    backgroundColor: C.limeGlow, borderRadius: RADIUS.md, borderWidth: 1, borderColor: C.lime,
+    padding: SPACE.md, gap: 4,
+  },
+  welcomeTitle: { color: C.lime, fontSize: 15, fontFamily: FONT.bold },
+  welcomeBody: { color: C.t2, fontSize: 12, fontFamily: FONT.regular, lineHeight: 18 },
+  hintText: { color: C.t3, fontSize: 11, fontFamily: FONT.regular, textAlign: 'center' },
 
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: SPACE.sm },
   dividerLine: { flex: 1, height: 1, backgroundColor: C.b1 },

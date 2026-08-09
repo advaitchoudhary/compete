@@ -33,6 +33,12 @@ import math
 # Elo+ model (v1) — per-tier Elo, blended overall, star rating, margin
 # ════════════════════════════════════════════════════════════════════
 
+# A 12-minute 5-a-side carries far less information than a 90-minute match, so it
+# must not move Elo as much. Applied to K — NOT to the tier blend, which is a
+# separate quantity and would double-count. See spec §3.5.
+REFERENCE_MINUTES = 90.0   # a full match
+MATCH_WEIGHT_FLOOR = 0.25  # a very short game still counts for something
+
 ELO_SCALE = 20.0          # sensitivity on the 0–100 rating range
 NUDGE = 0.6               # how much the star (individual) shifts the team result
 CONTRIB_SCALE = 1.5       # weighted-stat performance added ON TOP of the position baseline
@@ -43,15 +49,18 @@ MIDFIELD_CLEAN_SHEET_BONUS = 1.0  # smaller share for midfielders (they help def
 
 # Star rating starts from a position baseline ("you did your job"), then
 # performance is added. GK 5, defenders 4, everyone else 3.
+# DEF/MID/FWD are the coarse roles a captain declares at registration; the
+# specific ones are accepted too for anything that records them.
 POSITION_BASELINE = {
     "GK": 5.0,
+    "DEF": 4.0,
     "CB": 4.0, "LB": 4.0, "RB": 4.0, "CDM": 4.0,
 }
 DEFAULT_BASELINE = 3.0
 
 # Clean-sheet reward tiers: back line gets the full bonus, midfield a share.
-BACKLINE_POSITIONS = frozenset({"CB", "LB", "RB"})
-MIDFIELD_POSITIONS = frozenset({"CDM", "CM", "CAM"})
+BACKLINE_POSITIONS = frozenset({"DEF", "CB", "LB", "RB"})
+MIDFIELD_POSITIONS = frozenset({"MID", "CDM", "CM", "CAM"})
 
 # Overall-blend tier weights (higher tier counts more)
 TIER_WEIGHT = {"amateur": 1.0, "semi_pro": 1.5, "pro": 2.0, "legends": 3.0}
@@ -87,6 +96,24 @@ def k_factor(matches_played: int) -> float:
     return 10.0
 
 
+def match_weight(duration_minutes: float | None) -> float:
+    """
+    How much a single result should count, from its duration.
+
+    A missing duration means the match predates the column, so it is treated as a
+    full 90 minutes — every rating computed before this existed stays identical.
+    """
+    if duration_minutes is None:
+        return 1.0
+    try:
+        minutes = float(duration_minutes)
+    except (TypeError, ValueError):
+        return 1.0
+    if minutes <= 0:
+        return MATCH_WEIGHT_FLOOR
+    return max(MATCH_WEIGHT_FLOOR, min(1.0, minutes / REFERENCE_MINUTES))
+
+
 def mov_multiplier(margin: float) -> float:
     """Margin-of-victory multiplier, 1.0 (margin ≤1) … 1.5 (margin ≥6)."""
     return 1.0 + 0.1 * min(max(abs(margin) - 1, 0), 5)
@@ -96,12 +123,34 @@ def mov_multiplier(margin: float) -> float:
 GK_STATS = ("saves", "goals_conceded", "clean_sheet")
 
 
+def looks_like_keeper(player_stats: dict[str, Any]) -> bool:
+    """
+    Infer a goalkeeper from the stat line when no position was recorded.
+
+    Must test the VALUES, not the keys. The tournament scorecard submits a full
+    stat line for every player — `{"goals": 0, "assists": 0, "saves": 0}` — so a
+    key-presence check treated every outfielder as a keeper. They were then scored
+    on the GK branch, where goals and assists are not read at all: every winner on
+    a clean sheet came out at exactly 9.0 and every loser at exactly 5.0,
+    regardless of what they did.
+
+    `clean_sheet` is deliberately not a signal here. It is a team-level fact and
+    football's schema awards it to outfielders too, so it says nothing about
+    whether this player kept goal.
+    """
+    return (
+        float(player_stats.get("saves", 0) or 0) > 0
+        or float(player_stats.get("goals_conceded", 0) or 0) > 0
+    )
+
+
 def compute_star_rating(
     player_stats: dict[str, Any],
     sport_schema: dict[str, Any],
     position: str | None = None,
     won: bool = False,
     clean_sheet: bool = False,
+    conceded: float | None = None,
 ) -> float:
     """
     0–10 'man of the match' star — the flat, referee-approvable rating.
@@ -109,18 +158,28 @@ def compute_star_rating(
     + CLEAN_SHEET_BONUS for the keeper & back line, + flat WIN_BONUS for the
     winning team. This star is what later feeds Elo (via the nudge).
 
-    clean_sheet is a team-level fact (the player's team conceded 0).
+    clean_sheet is a team-level fact (the player's team conceded 0). `conceded`
+    is the goals the player's team let in — also team-level, and passed in rather
+    than read from the stat line because no scorecard records goals_conceded per
+    player. Without it a keeper who let in four still scored as though he had let
+    in none. It is a parameter, not an injected stat, because writing
+    goals_conceded into the stats dict would make every outfielder on a losing
+    team look like a keeper again.
     """
     pos = (position or "").upper()
 
     # Goalkeeper — baseline 5, shaped by saves / clean sheet / goals conceded.
-    if pos == "GK" or (pos == "" and any(k in player_stats for k in GK_STATS)):
+    if pos == "GK" or (pos == "" and looks_like_keeper(player_stats)):
         saves = float(player_stats.get("saves", 0) or 0)
-        conceded = float(player_stats.get("goals_conceded", 0) or 0)
-        gk_clean = clean_sheet or bool(player_stats.get("clean_sheet")) or (
-            "goals_conceded" in player_stats and conceded == 0
+        let_in = (
+            float(conceded)
+            if conceded is not None
+            else float(player_stats.get("goals_conceded", 0) or 0)
         )
-        star = POSITION_BASELINE["GK"] + min(saves * 0.3, 3.0) - min(conceded * 0.5, 3.0)
+        gk_clean = clean_sheet or bool(player_stats.get("clean_sheet")) or (
+            conceded is not None and let_in == 0
+        ) or ("goals_conceded" in player_stats and let_in == 0)
+        star = POSITION_BASELINE["GK"] + min(saves * 0.3, 3.0) - min(let_in * 0.5, 3.0)
         if gk_clean:
             star += GK_CLEAN_SHEET_BONUS
     else:
@@ -167,12 +226,14 @@ def elo_delta(
     matches_played: int,
     margin: float,
     star: float,          # 0–10
+    weight: float = 1.0,  # match weight (see match_weight); 1.0 = a full match
 ) -> float:
     """Tier-ladder Elo change. The star (which already carries the win bonus)
-    nudges the team result into the Elo delta."""
+    nudges the team result into the Elo delta, and `weight` scales K down for a
+    short game. Defaults to 1.0 so existing callers are unaffected."""
     expected = expected_score(rating, opponent_avg)
     effective = (actual - expected) + NUDGE * (star / 10.0 - 0.5)
-    return k_factor(matches_played) * mov_multiplier(margin) * effective
+    return k_factor(matches_played) * weight * mov_multiplier(margin) * effective
 
 
 def blend_overall(tier_rows: list[tuple[str, float, int]]) -> float:

@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../../shared/middleware/auth'
+import { sql } from 'kysely'
 import { getDb } from '../../shared/db/client'
 import { MATCH_TIERS, TIER_RANK } from '../../shared/tiers'
+import { roundLabel } from '../events/bracket/round-label'
 
 const ApplyBody = z.object({
   full_name: z.string().min(2).max(80),
@@ -148,4 +150,81 @@ export async function refereeRoutes(app: FastifyInstance) {
       application: application ?? null,
     }
   })
+
+  /**
+   * GET /referee/matches
+   *
+   * Every match this referee is on, soonest first. This is the match-day home
+   * screen: an official arriving at the turf needs "what am I refereeing, on which
+   * pitch, and which one is next" without navigating a tournament they may not
+   * even know the name of.
+   *
+   * Nothing else could answer that. GET /matches filters by status and sport only,
+   * and /referee/me returns application state, so the assigned official was the one
+   * person in the system with no list of their own fixtures.
+   *
+   * `scope=upcoming` (default) hides finished matches; `scope=all` keeps them for
+   * looking back at a day's work.
+   */
+  app.get(
+    '/referee/matches',
+    { preHandler: requireRole('referee', 'admin') },
+    async (request, reply) => {
+      const query = request.query as { scope?: string; limit?: string }
+      const limit = Math.min(Number(query.limit ?? 50), 100)
+
+      let qb = getDb()
+        .selectFrom('matches as m')
+        .leftJoin('teams as ht', 'ht.id', 'm.home_team_id')
+        .leftJoin('teams as at', 'at.id', 'm.away_team_id')
+        .leftJoin('events as e', 'e.id', 'm.event_id')
+        .leftJoin('event_fixtures as ef', 'ef.match_id', 'm.id')
+        .select([
+          'm.id', 'm.status', 'm.round', 'm.scheduled_at', 'm.started_at',
+          'm.tier', 'm.format', 'm.duration_minutes', 'm.venue',
+          'm.home_team_id', 'm.away_team_id',
+          'ht.name as home_team_name', 'at.name as away_team_name',
+          'e.id as event_id', 'e.name as event_name',
+          'ef.pitch_label',
+        ])
+        .where('m.referee_id', '=', request.userId)
+        // A live match comes first whatever its clock says — it is the one the
+        // referee is standing on. Casual matches often carry no scheduled_at at
+        // all, which sorts them last, and a live one was ending up at the bottom
+        // of the list. Then by kick-off, unscheduled last.
+        .orderBy(sql`case when m.status = 'live' then 0 else 1 end`, 'asc')
+        .orderBy(sql`m.scheduled_at asc nulls last`)
+        .limit(limit)
+
+      if (query.scope !== 'all') {
+        qb = qb.where('m.status', 'in', ['scheduled', 'live'])
+        // A cancelled or wrapped-up tournament leaves its unplayed matches sitting
+        // at 'scheduled' forever. Without this they pile up in the duty list and
+        // bury the fixture the referee is actually walking to. Casual matches have
+        // no event and are always kept.
+        qb = qb.where((eb) =>
+          eb.or([
+            eb('e.id', 'is', null),
+            eb('e.status', 'not in', ['cancelled', 'completed']),
+          ])
+        )
+      }
+
+      const rows = await qb.execute()
+
+      return {
+        count: rows.length,
+        // The one the referee should be walking towards: live if anything is in
+        // progress, else the next thing scheduled.
+        next_match_id:
+          rows.find((r) => r.status === 'live')?.id ??
+          rows.find((r) => r.status === 'scheduled')?.id ??
+          null,
+        matches: rows.map((r) => ({
+          ...r,
+          round_label: r.round ? roundLabel(r.round) : null,
+        })),
+      }
+    }
+  )
 }

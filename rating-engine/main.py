@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 import json
 import threading
 from config import settings
-from consumer import run_consumer, get_db, decide_winner, team_clean_sheet
+from consumer import run_consumer, get_db, decide_winner, team_conceded
 from algorithms.base import compute_star_rating
 from algorithms import preprocess_stats
 
@@ -64,12 +64,13 @@ def suggest_match(match_id: str):
         for r in rows:
             stats = r["stats"] if isinstance(r["stats"], dict) else json.loads(r["stats"])
             won = winner is not None and r["team_id"] == winner
-            clean = team_clean_sheet(
+            conceded = team_conceded(
                 slug, meta["home_score"], meta["away_score"],
                 r["team_id"], meta["home_team_id"], meta["away_team_id"],
             )
+            clean = conceded == 0 if conceded is not None else False
             star = compute_star_rating(
-                preprocess_stats(slug, stats), schema, r["position"], won, clean
+                preprocess_stats(slug, stats), schema, r["position"], won, clean, conceded
             )
             cur.execute(
                 "UPDATE match_player_stats SET suggested_rating = %s WHERE match_id = %s AND user_id = %s",

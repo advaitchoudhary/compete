@@ -10,10 +10,18 @@ import { usersRoutes } from './modules/users/users.routes'
 import { sportsRoutes } from './modules/sports/sports.routes'
 import { teamsRoutes } from './modules/teams/teams.routes'
 import { eventsRoutes } from './modules/events/events.routes'
+import { eventRefereesRoutes } from './modules/events/event-referees.routes'
+import { eventTierRoutes } from './modules/events/event-tier.routes'
+import { eventRegistrationRoutes } from './modules/events/event-registration.routes'
+import { eventFixturesRoutes } from './modules/events/event-fixtures.routes'
+import { publicEventRoutes } from './modules/events/public-event.routes'
+import { guestClaimRoutes } from './modules/users/guest-claim.routes'
+import { notificationsRoutes } from './modules/notifications/notifications.routes'
 import { matchesRoutes } from './modules/matches/matches.routes'
 import { scoresRoutes } from './modules/scores/scores.routes'
 import { achievementsRoutes } from './modules/achievements/achievements.routes'
 import { refereeRoutes } from './modules/referee/referee.routes'
+import { organizerRoutes } from './modules/organizer/organizer.routes'
 import { adminRoutes } from './modules/admin/admin.routes'
 import { initFirebase } from './modules/auth/auth.service'
 
@@ -53,10 +61,19 @@ async function build() {
   await app.register(sportsRoutes, { prefix: V1_PREFIX })
   await app.register(teamsRoutes, { prefix: V1_PREFIX })
   await app.register(eventsRoutes, { prefix: V1_PREFIX })
+  await app.register(eventRefereesRoutes, { prefix: V1_PREFIX })
+  await app.register(eventTierRoutes, { prefix: V1_PREFIX })
+  await app.register(eventRegistrationRoutes, { prefix: V1_PREFIX })
+  await app.register(eventFixturesRoutes, { prefix: V1_PREFIX })
+  // The only unauthenticated route group — see public-event.routes.ts.
+  await app.register(publicEventRoutes, { prefix: V1_PREFIX })
+  await app.register(guestClaimRoutes, { prefix: V1_PREFIX })
+  await app.register(notificationsRoutes, { prefix: V1_PREFIX })
   await app.register(matchesRoutes, { prefix: V1_PREFIX })
   await app.register(scoresRoutes, { prefix: V1_PREFIX })
   await app.register(achievementsRoutes, { prefix: V1_PREFIX })
   await app.register(refereeRoutes, { prefix: V1_PREFIX })
+  await app.register(organizerRoutes, { prefix: V1_PREFIX })
   await app.register(adminRoutes, { prefix: V1_PREFIX })
 
   // Global error handler

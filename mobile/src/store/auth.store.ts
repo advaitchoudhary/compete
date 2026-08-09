@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { setToken, clearToken, saveUser } from '../api/client'
+import { registerForPush, unregisterPush } from '../lib/push'
 
 interface User {
   id: string
@@ -7,6 +8,11 @@ interface User {
   username: string | null
   avatar_url: string | null
   city: string | null
+  // Returned by /auth/dev-token, /auth/verify and /users/me. Optional because a
+  // user object persisted by an older build won't have it. Role decides which
+  // entry points show (organizer control room, referee scoring, admin queue) —
+  // it is never the authority on access; every route is gated server-side.
+  role?: 'player' | 'referee' | 'organizer' | 'admin'
 }
 
 interface AuthState {
@@ -24,10 +30,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     setToken(token)
     saveUser(user)
     set({ user, isAuthenticated: true })
+    // Fire-and-forget: push is a nice-to-have on top of signing in, and
+    // registerForPush never throws. Awaiting it would make a permission prompt or
+    // an unreachable Expo service delay getting into the app.
+    void registerForPush()
   },
 
   clearAuth: () => {
-    clearToken()
-    set({ user: null, isAuthenticated: false })
+    // Drop the device token BEFORE clearing the JWT — the DELETE needs to be
+    // authenticated to prove the token belongs to this user.
+    void unregisterPush().finally(() => {
+      clearToken()
+      set({ user: null, isAuthenticated: false })
+    })
   },
 }))

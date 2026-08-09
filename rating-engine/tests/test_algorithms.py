@@ -21,11 +21,13 @@ import pytest
 from algorithms.base import (
     compute_star_rating,
     elo_delta,
+    match_weight,
     blend_overall,
     compute_form_rating,
     WIN_BONUS,
     CLEAN_SHEET_BONUS,
     MIDFIELD_CLEAN_SHEET_BONUS,
+    GK_CLEAN_SHEET_BONUS,
 )
 from algorithms import preprocess_stats
 
@@ -232,3 +234,133 @@ class TestPreprocessors:
     def test_unknown_sport_returns_unchanged(self):
         original = {"some_stat": 5}
         assert preprocess_stats("volleyball", original) == original
+
+
+class TestMatchWeight:
+    """
+    A short game carries less information, so it must move Elo less.
+    The backwards-compatibility guard is the important one here: every match
+    recorded before duration existed must keep its exact previous behaviour.
+    """
+
+    def test_a_full_match_has_full_weight(self):
+        assert match_weight(90) == 1.0
+
+    def test_missing_duration_is_treated_as_a_full_match(self):
+        # THE compatibility guard: existing rows have no duration.
+        assert match_weight(None) == 1.0
+
+    def test_a_long_match_does_not_exceed_full_weight(self):
+        assert match_weight(120) == 1.0
+
+    def test_a_short_match_is_floored_not_zeroed(self):
+        # 12/90 = 0.13, below the floor, so it clamps to 0.25 rather than making a
+        # tournament result count for almost nothing.
+        assert match_weight(12) == 0.25
+        assert match_weight(1) == 0.25
+
+    def test_a_mid_length_match_scales_linearly(self):
+        assert abs(match_weight(45) - 0.5) < 1e-9
+
+    def test_weight_is_monotonic(self):
+        weights = [match_weight(d) for d in (5, 20, 45, 60, 90)]
+        assert weights == sorted(weights)
+
+    def test_elo_delta_defaults_to_unweighted(self):
+        # No weight argument must reproduce the pre-Phase-4a delta exactly.
+        assert elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0) == elo_delta(
+            50.0, 50.0, 1.0, 10, 1.0, 5.0, 1.0
+        )
+
+    def test_a_short_match_moves_elo_less_than_a_full_one(self):
+        full = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(90))
+        short = elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(12))
+        assert abs(short) < abs(full)
+        # Floor is 0.25, so the short game should be a quarter of the full one.
+        assert abs(short - full * 0.25) < 1e-9
+
+    def test_weighting_preserves_direction(self):
+        # A win must still gain and a loss must still drop, however short.
+        assert elo_delta(50.0, 50.0, 1.0, 10, 1.0, 5.0, match_weight(12)) > 0
+        assert elo_delta(50.0, 50.0, 0.0, 10, 1.0, 5.0, match_weight(12)) < 0
+
+
+class TestOutfieldersAreNotMistakenForKeepers:
+    """
+    Regression: the tournament scorecard submits a complete stat line for every
+    player — {"goals": 0, "assists": 0, "saves": 0} — and the keeper heuristic
+    used to test whether the `saves` KEY was present rather than whether its
+    value was non-zero. Every outfielder was therefore scored on the goalkeeper
+    branch, which never reads goals or assists.
+
+    Live consequence, seen in a real 4-0: every winner scored exactly 9.0 and
+    every loser exactly 5.0, whatever they did.
+    """
+
+    def _line(self, **kw):
+        # A full stat line, zeros included — exactly what the scorecard sends.
+        return {"goals": 0, "assists": 0, "saves": 0, **kw}
+
+    def test_a_zeroed_saves_key_does_not_make_a_keeper(self):
+        scorer = compute_star_rating(self._line(goals=1), FOOTBALL_SCHEMA, None, True, True)
+        anon = compute_star_rating(self._line(), FOOTBALL_SCHEMA, None, True, True)
+        assert scorer > anon, "a goalscorer must outrate a team-mate who did nothing"
+
+    def test_goals_and_assists_both_move_the_star(self):
+        base = compute_star_rating(self._line(), FOOTBALL_SCHEMA, None, True, True)
+        goal = compute_star_rating(self._line(goals=1), FOOTBALL_SCHEMA, None, True, True)
+        both = compute_star_rating(self._line(goals=1, assists=1), FOOTBALL_SCHEMA, None, True, True)
+        assert base < goal < both
+
+    def test_winners_on_a_clean_sheet_are_not_all_identical(self):
+        squad = [
+            compute_star_rating(self._line(goals=g, assists=a), FOOTBALL_SCHEMA, None, True, True)
+            for g, a in [(0, 0), (1, 0), (1, 1), (2, 0)]
+        ]
+        assert len(set(squad)) > 1, f"whole squad collapsed onto one value: {squad}"
+
+    def test_losers_are_not_all_identical_either(self):
+        squad = [
+            compute_star_rating(self._line(goals=g, assists=a), FOOTBALL_SCHEMA, None, False, False)
+            for g, a in [(0, 0), (0, 1), (1, 0)]
+        ]
+        assert len(set(squad)) > 1, f"whole squad collapsed onto one value: {squad}"
+
+    def test_a_real_keeper_is_still_scored_as_one(self):
+        # Explicit position always wins, and an unpositioned player with actual
+        # saves is still inferred to be the keeper.
+        explicit = compute_star_rating({"saves": 4}, FOOTBALL_SCHEMA, "GK", False, True)
+        inferred = compute_star_rating({"saves": 4}, FOOTBALL_SCHEMA, None, False, True)
+        assert explicit == inferred
+        # Keeper baseline (5) + saves + clean sheet clears any outfield line.
+        assert explicit > compute_star_rating({"goals": 0, "assists": 0, "saves": 0},
+                                              FOOTBALL_SCHEMA, None, False, True)
+
+
+class TestKeeperIsAccountableForGoalsLetIn:
+    """
+    No scorecard records goals_conceded per player, so a keeper's stat line is
+    just saves. The team's score is passed in separately; without it a keeper who
+    let in four rated the same as one who let in none.
+    """
+
+    def test_conceding_costs_the_keeper(self):
+        beaten = compute_star_rating({"saves": 2}, FOOTBALL_SCHEMA, "GK", False, False, conceded=4)
+        untroubled = compute_star_rating({"saves": 2}, FOOTBALL_SCHEMA, "GK", False, False, conceded=0)
+        assert beaten < untroubled
+
+    def test_more_goals_conceded_is_worse(self):
+        one = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=1)
+        four = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=4)
+        assert four < one
+
+    def test_conceded_zero_still_counts_as_a_clean_sheet(self):
+        shut_out = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=0)
+        leaked = compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK", False, False, conceded=1)
+        assert shut_out - leaked >= GK_CLEAN_SHEET_BONUS - ROUNDING_TOLERANCE
+
+    def test_omitting_conceded_keeps_the_old_behaviour(self):
+        # Callers that do not know the score still work off the stat line.
+        assert compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK") == pytest.approx(
+            compute_star_rating({"saves": 3}, FOOTBALL_SCHEMA, "GK"), abs=1e-9
+        )

@@ -9,6 +9,21 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * Tokens that are signed with our secret but are NOT sessions.
+ *
+ * A guest claim link is a JWT with the same secret and a `sub` of the guest's id.
+ * Without this check, handing someone a claim link would hand them a live session
+ * for that player. Any future single-purpose token must be added here.
+ */
+const NON_SESSION_TOKEN_TYPES = new Set(['guest_claim'])
+
+/** True when the decoded payload is a single-purpose token, not a session. */
+function isNonSessionToken(payload: unknown): boolean {
+  const typ = (payload as { typ?: unknown } | null)?.typ
+  return typeof typ === 'string' && NON_SESSION_TOKEN_TYPES.has(typ)
+}
+
 export async function requireAuth(
   request: FastifyRequest,
   reply: FastifyReply
@@ -18,6 +33,9 @@ export async function requireAuth(
     // jwtVerify attaches the decoded payload to request.user
     // We cast it to our payload shape
     const payload = request.user as { sub: string }
+    if (isNonSessionToken(request.user)) {
+      return reply.code(401).send({ error: 'Unauthorized' })
+    }
     request.userId = payload.sub
   } catch {
     reply.code(401).send({ error: 'Unauthorized' })
@@ -39,6 +57,9 @@ export function requireRole(...roles: UserRole[]) {
   return async function (request: FastifyRequest, reply: FastifyReply): Promise<void> {
     try {
       await request.jwtVerify()
+      if (isNonSessionToken(request.user)) {
+        return reply.code(401).send({ error: 'Unauthorized' })
+      }
       request.userId = (request.user as { sub: string }).sub
     } catch {
       return reply.code(401).send({ error: 'Unauthorized' })

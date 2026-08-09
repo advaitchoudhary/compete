@@ -161,6 +161,19 @@ export default function MatchesScreen() {
   const router = useRouter()
   const [filter, setFilter] = useState<Filter>('All')
 
+  // A referee's own fixtures. This is the match-day view: an official arriving at
+  // the turf needs to know what they are refereeing and which one is next, without
+  // navigating a tournament by name. Polls while the app is open so a bracket
+  // generated mid-session appears without a manual refresh.
+  const isRef = user?.role === 'referee' || user?.role === 'admin'
+  const { data: refDuty } = useQuery({
+    queryKey: ['referee', 'matches'],
+    queryFn: () => api.get('/referee/matches').then(r => r.data),
+    enabled: !!user && isRef,
+    refetchInterval: 60_000,
+  })
+  const duty: any[] = refDuty?.matches ?? []
+
   // Tournament queries — merge active + registration events
   const { data: activeRaw, isLoading: activeLoading } = useQuery({
     queryKey: ['events', 'active'],
@@ -219,12 +232,71 @@ export default function MatchesScreen() {
         }
       >
 
+        {/* ── YOUR MATCHES (referees) ──────────────────────────
+            Pinned above tournaments: on a match day this is the only thing the
+            referee opened the app for. */}
+        {isRef && duty.length > 0 && (
+          <>
+            <View style={s.sectionHeaderRow}>
+              <Text style={s.sectionLabel}>🦓 YOUR MATCHES</Text>
+              <Text style={s.dutyCount}>{duty.length} to officiate</Text>
+            </View>
+            <View style={s.dutyList}>
+              {duty.map(m => {
+                const isNext = m.id === refDuty?.next_match_id
+                const live = m.status === 'live'
+                const time = m.scheduled_at
+                  ? new Date(m.scheduled_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+                  : '—'
+                return (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[du.row, isNext && du.rowNext]}
+                    activeOpacity={0.85}
+                    onPress={() => router.push({ pathname: '/match/[id]', params: { id: m.id } })}
+                  >
+                    <View style={du.when}>
+                      <Text style={[du.time, isNext && { color: C.lime }]}>{time}</Text>
+                      <Text style={du.pitch} numberOfLines={1}>
+                        {m.pitch_label ?? m.venue ?? '—'}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={du.caption}>
+                        {(m.event_name ?? 'Casual match')}{m.round_label ? ` · ${m.round_label}` : ''}
+                      </Text>
+                      <Text style={du.teams} numberOfLines={1}>
+                        {m.home_team_name} <Text style={{ color: C.t3 }}>v</Text> {m.away_team_name}
+                      </Text>
+                    </View>
+                    {live
+                      ? <Text style={du.live}>● LIVE</Text>
+                      : isNext
+                        ? <Text style={du.nextTag}>NEXT →</Text>
+                        : <Text style={du.chev}>›</Text>}
+                  </TouchableOpacity>
+                )
+              })}
+            </View>
+            <View style={s.divider} />
+          </>
+        )}
+
         {/* ── TOURNAMENTS SECTION ─────────────────────────────── */}
         <View style={s.sectionHeaderRow}>
           <Text style={s.sectionLabel}>TOURNAMENTS</Text>
-          <TouchableOpacity style={s.sectionBtn} onPress={() => router.push('/create-tournament')}>
-            <Text style={s.sectionBtnText}>+ Create</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {/* Organizers get the control room; everyone else only sees Create,
+                which is itself gated server-side by requireRole. */}
+            {(user?.role === 'organizer' || user?.role === 'admin') && (
+              <TouchableOpacity style={s.sectionBtn} onPress={() => router.push('/organizer')}>
+                <Text style={s.sectionBtnText}>🏟️ Manage</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={s.sectionBtn} onPress={() => router.push('/create-tournament')}>
+              <Text style={s.sectionBtnText}>+ Create</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {eventsLoading ? (
@@ -340,6 +412,8 @@ const s = StyleSheet.create({
   newBtnText: { color: C.limeText, fontSize: 14, fontWeight: '800' },
 
   // Tournaments
+  dutyCount: { color: C.t3, fontSize: 11, fontWeight: '700' },
+  dutyList:  { marginHorizontal: 22, marginBottom: 4, gap: 6 },
   sectionHeaderRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 22, marginBottom: 12,
@@ -382,4 +456,23 @@ const s = StyleSheet.create({
   },
   sportCardEmoji: { fontSize: 32 },
   sportCardName:  { fontSize: 14, fontWeight: '700' },
+})
+
+// Referee duty row — deliberately chunky. This is tapped outdoors, in sunlight,
+// usually one-handed while holding a whistle.
+const du = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: C.s1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 14,
+    borderWidth: 1, borderColor: C.b1, minHeight: 64,
+  },
+  rowNext: { borderColor: C.lime, backgroundColor: C.limeGlow },
+  when:    { width: 62 },
+  time:    { color: C.t1, fontSize: 15, fontWeight: '800' },
+  pitch:   { color: C.t3, fontSize: 11, fontWeight: '600', marginTop: 1 },
+  caption: { color: C.t3, fontSize: 10, fontWeight: '700', letterSpacing: 0.6 },
+  teams:   { color: C.t1, fontSize: 15, fontWeight: '700', marginTop: 2 },
+  live:    { color: C.green, fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  nextTag: { color: C.lime, fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  chev:    { color: C.t3, fontSize: 18, fontWeight: '700' },
 })

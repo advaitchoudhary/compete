@@ -1,7 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   ScrollView, View, Text, StyleSheet,
-  TouchableOpacity, ActivityIndicator, Alert, RefreshControl,
+  TouchableOpacity, ActivityIndicator, RefreshControl,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
@@ -9,7 +9,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '../../src/store/auth.store'
 import { api } from '../../src/api/client'
 import { C, SPORT } from '../../src/theme'
-import type { EventDetail, EventSummary, EventTeam, MatchSummary } from '../../src/types/tournament'
+import { confirm, notify } from '../../src/lib/dialog'
+import { Share, Platform } from 'react-native'
+import type { EventDetail, EventTeam, MatchSummary } from '../../src/types/tournament'
 
 const EVENT_STATUS_CFG: Record<string, { label: string; color: string; bg: string }> = {
   upcoming:     { label: 'UPCOMING', color: C.amber, bg: 'rgba(245,158,11,0.14)' },
@@ -26,15 +28,11 @@ const MATCH_STATUS_CFG: Record<string, { label: string; color: string; bg: strin
   cancelled: { label: 'CANCELLED', color: C.t3,    bg: C.s3                    },
 }
 
-function normalise(raw: any): any[] {
-  return Array.isArray(raw) ? raw : (raw?.data ?? raw?.items ?? [])
-}
-
 // ─── TournamentMatchRow ───────────────────────────────────────────────────────
 
 function TournamentMatchRow({ match, onPress }: { match: MatchSummary; onPress: () => void }) {
   const stCfg = MATCH_STATUS_CFG[match.status] ?? MATCH_STATUS_CFG.scheduled
-  const hasScore = match.home_score != null || match.away_score != null
+  const hasScore = match.home_goals != null || match.away_goals != null
 
   return (
     <TouchableOpacity style={mr.row} onPress={onPress} activeOpacity={0.78}>
@@ -42,14 +40,14 @@ function TournamentMatchRow({ match, onPress }: { match: MatchSummary; onPress: 
         <Text style={[mr.badgeText, { color: stCfg.color }]}>{stCfg.label}</Text>
       </View>
       <View style={mr.teams}>
-        <Text style={mr.teamName} numberOfLines={1}>{match.home_team_name}</Text>
+        <Text style={mr.teamName} numberOfLines={1}>{match.home_team_name ?? 'TBC'}</Text>
         <Text style={mr.scoreOrVs}>
           {hasScore
-            ? `${match.home_score ?? 0} — ${match.away_score ?? 0}`
+            ? `${match.home_goals ?? 0} — ${match.away_goals ?? 0}`
             : 'vs'}
         </Text>
         <Text style={[mr.teamName, { textAlign: 'right' }]} numberOfLines={1}>
-          {match.away_team_name}
+          {match.away_team_name ?? 'TBC'}
         </Text>
       </View>
       {match.scheduled_at && (
@@ -102,12 +100,19 @@ const tr = StyleSheet.create({
   points:    { color: C.lime, fontSize: 13, fontWeight: '800' },
 })
 
+const errText = (e: any): string => {
+  const err = e?.response?.data?.error
+  if (typeof err === 'string') return err
+  if (err?.fieldErrors) return Object.values(err.fieldErrors as Record<string, string[]>).flat().join(', ')
+  return e?.message ?? 'Something went wrong'
+}
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function TournamentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
-  const queryClient = useQueryClient()
+  const qc = useQueryClient()
   const { user } = useAuthStore()
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
@@ -116,7 +121,9 @@ export default function TournamentDetailScreen() {
     enabled: !!id,
   })
 
-  const eventMeta: EventSummary | undefined = data?.event
+  // The event's fields come back flat, not under a nested `event` key — see
+  // EventDetail. Reading data.event here made every tournament "not found".
+  const eventMeta: EventDetail | undefined = data
   const teams: EventTeam[]     = data?.teams   ?? []
   const matches: MatchSummary[] = data?.matches ?? []
 
@@ -126,75 +133,106 @@ export default function TournamentDetailScreen() {
   const stCfg = eventMeta ? (EVENT_STATUS_CFG[eventMeta.status] ?? EVENT_STATUS_CFG.upcoming) : EVENT_STATUS_CFG.upcoming
 
   const isOrganizer = !!user && user.id === eventMeta?.organizer_id
-  const canRegister = !!eventMeta && ['upcoming', 'registration'].includes(eventMeta.status)
+  // Must match the backend: /events/:id/register accepts 'registration' only.
+  // Including 'upcoming' offered a button that could only ever 409.
+  const canRegister = eventMeta?.status === 'registration'
 
   // Group matches by round
   const byRound = useMemo(() => {
     return matches.reduce((acc, m) => {
-      const key = m.round ?? 'General'
+      const key = m.round_label ?? m.round ?? 'General'
       ;(acc[key] = acc[key] ?? []).push(m)
       return acc
     }, {} as Record<string, MatchSummary[]>)
   }, [matches])
   const rounds = Object.keys(byRound)
 
-  // Fetch user's captained teams (for register flow)
-  const { data: myTeamsRaw } = useQuery({
-    queryKey: ['my-teams', user?.id, eventMeta?.sport_slug],
-    queryFn: () =>
-      api.get('/teams', { params: { sport: eventMeta?.sport_slug } })
-        .then(r => {
-          const all = normalise(r.data)
-          return all.filter((t: any) => t.organizer_id === user?.id)
-        }),
-    enabled: !!user && !!eventMeta && canRegister,
-  })
-  const myTeams: any[] = myTeamsRaw ?? []
-  const registeredTeamIds = new Set(teams.map(t => t.id))
-  const eligibleTeams = myTeams.filter((t: any) => !registeredTeamIds.has(t.id))
 
-  // Register team mutation
-  const registerMutation = useMutation({
-    mutationFn: (teamId: string) =>
-      api.post(`/events/${id}/teams`, { team_id: teamId }).then(r => r.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['event', id] })
-      Alert.alert('Registered!', 'Your team has been added to this tournament.')
-    },
-    onError: (err: any) => {
-      Alert.alert('Error', err?.response?.data?.message ?? err?.message ?? 'Registration failed')
-    },
-  })
-
+  /**
+   * Registration goes to the squad form, not to POST /events/:id/teams.
+   *
+   * That older endpoint takes an existing team_id and never checks the event's
+   * a-side squad minimum, so it could put a 3-player "team" into an 11-a-side
+   * tournament and break fixture generation later. The squad flow enforces the
+   * minimum, creates guests for players without accounts, and is the only path
+   * that produces a roster the tournament can actually be played with.
+   */
   function handleRegister() {
-    if (eligibleTeams.length === 0) {
-      Alert.alert(
-        'No Eligible Team',
-        'You need to be the captain of a team to register. Create a team first.',
-        [{ text: 'OK' }],
-      )
-      return
+    router.push(`/register-team/${id}`)
+  }
+
+  /**
+   * Builds the entire bracket in one call: groups, knockout rounds, slot times,
+   * pitch assignments and a referee per match. Re-runnable until the first
+   * kick-off, and refused with a readable reason if the event is not ready (no
+   * refereed pitch, fewer than two teams, a grade its referees cannot officiate).
+   */
+  /**
+   * The squads, with who is still an unclaimed guest.
+   *
+   * A captain is the right person to send claim links — they typed those names in,
+   * they have the numbers, and there is one of them per team against one referee
+   * per pitch. The backend already permitted it (they are `created_by` on every
+   * guest they entered, and captain of the shared team); only a surface was
+   * missing.
+   */
+  const { data: squadData } = useQuery({
+    queryKey: ['event-squads', id],
+    queryFn: () => api.get(`/events/${id}/teams`).then(r => r.data),
+    enabled: !!id && !!user,
+  })
+  const myTeam: any = (squadData?.teams ?? []).find((t: any) =>
+    (t.players ?? []).some((p: any) => p.user_id === user?.id && p.role === 'captain')
+  )
+  const [sendingClaim, setSendingClaim] = useState<string | null>(null)
+
+  const sendClaimLink = async (playerId: string, playerName: string) => {
+    setSendingClaim(playerId)
+    try {
+      const res = await api.post(`/guests/${playerId}/claim-link`, {})
+      const url: string = res.data.claim_url
+      const message =
+        `${playerName} — you played for ${myTeam?.name ?? 'our team'} and you've been rated ` +
+        `on every match. Claim your AllSports profile to keep it: ${url}`
+      if (Platform.OS === 'web') {
+        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+          await navigator.clipboard.writeText(message)
+          notify('Link copied', `Send it to ${playerName} on WhatsApp.`)
+        } else notify(`Claim link for ${playerName}`, url)
+      } else {
+        await Share.share({ message })
+      }
+    } catch (e: any) {
+      notify("Couldn't create the link", errText(e))
+    } finally {
+      setSendingClaim(null)
     }
-    if (eligibleTeams.length === 1) {
-      Alert.alert(
-        'Register Team',
-        `Register "${eligibleTeams[0].name}" for this tournament?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Register', onPress: () => registerMutation.mutate(eligibleTeams[0].id) },
-        ],
+  }
+
+  const autoGen = useMutation({
+    mutationFn: () => api.post(`/events/${id}/fixtures`, {}).then(r => r.data),
+    onSuccess: (d: any) => {
+      qc.invalidateQueries({ queryKey: ['event', id] })
+      notify(
+        'Fixtures generated',
+        `${d.fixtures} fixtures, ${d.matches} matches ready.` +
+          (d.fell_back ? `\n\nFell back to a straight knockout: ${d.fallback_reason}` : '')
       )
-      return
-    }
-    // Multiple teams — show picker
-    const buttons = [
-      ...eligibleTeams.map((t: any) => ({
-        text: t.name,
-        onPress: () => registerMutation.mutate(t.id),
-      })),
-      { text: 'Cancel', style: 'cancel' as const },
-    ]
-    Alert.alert('Select Team', 'Which team would you like to register?', buttons)
+    },
+    // The backend explains exactly what is missing, so surface that verbatim
+    // rather than a generic failure.
+    onError: (e: any) => notify("Can't generate yet", errText(e)),
+  })
+
+  function handleAutoGenerate() {
+    confirm(
+      'Auto-generate fixtures?',
+      matches.length > 0
+        ? 'This replaces the current schedule and re-seeds from the registered teams.'
+        : `Builds the full bracket from the ${teams.length} registered teams, assigning kick-off times, pitches and referees.`,
+      () => autoGen.mutate(),
+      'Generate'
+    )
   }
 
   // ── Loading / Error states ────────────────────────────────────────────────
@@ -281,16 +319,13 @@ export default function TournamentDetailScreen() {
         {/* ── TEAMS SECTION ────────────────────────────────────── */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionLabel}>TEAMS</Text>
-          {canRegister && eligibleTeams.length > 0 && (
+          {canRegister && (
             <TouchableOpacity
               style={s.sectionAction}
               onPress={handleRegister}
-              disabled={registerMutation.isPending}
               activeOpacity={0.75}
             >
-              <Text style={s.sectionActionText}>
-                {registerMutation.isPending ? 'Registering…' : '+ Register'}
-              </Text>
+              <Text style={s.sectionActionText}>+ Register</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -316,20 +351,79 @@ export default function TournamentDetailScreen() {
           </View>
         )}
 
+        {/* ── YOUR SQUAD (captains only) ────────────────────────
+            Every guest the captain typed in is a rated player with no way to
+            reach their rating until someone hands them the link. The captain has
+            their number; nobody else reliably does. */}
+        {myTeam && (
+          <>
+            <View style={s.sectionHeader}>
+              <Text style={s.sectionLabel}>YOUR SQUAD · {myTeam.name.toUpperCase()}</Text>
+            </View>
+            <View style={s.card}>
+              {(myTeam.players ?? []).map((p: any) => {
+                const claimable = p.is_guest && !p.claimed_at
+                return (
+                  <View key={p.user_id} style={sq.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={sq.name}>{p.name}</Text>
+                      <Text style={sq.meta}>
+                        {p.role === 'captain' ? 'Captain · you' : (p.position ?? 'no position')}
+                        {p.is_guest && !p.claimed_at ? ' · guest' : ''}
+                        {p.claimed_at ? ' · claimed' : ''}
+                      </Text>
+                    </View>
+                    {claimable ? (
+                      <TouchableOpacity
+                        style={sq.sendBtn}
+                        onPress={() => sendClaimLink(p.user_id, p.name)}
+                        disabled={sendingClaim === p.user_id}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={sq.sendText}>
+                          {sendingClaim === p.user_id ? '…' : 'Send link'}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <Text style={sq.done}>{p.is_guest ? '' : '✓'}</Text>
+                    )}
+                  </View>
+                )
+              })}
+              <Text style={sq.hint}>
+                Guests keep the rating they earn. Send each of them their link so it
+                stays theirs.
+              </Text>
+            </View>
+          </>
+        )}
+
         {/* ── MATCHES SECTION ──────────────────────────────────── */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionLabel}>MATCHES</Text>
           {isOrganizer && (
-            <TouchableOpacity
-              style={s.sectionAction}
-              onPress={() => router.push({
-                pathname: '/create-match',
-                params: { event_id: id, sport: eventMeta.sport_slug },
-              })}
-              activeOpacity={0.75}
-            >
-              <Text style={s.sectionActionText}>+ Add Match</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity
+                style={s.sectionAction}
+                onPress={handleAutoGenerate}
+                disabled={autoGen.isPending}
+                activeOpacity={0.75}
+              >
+                <Text style={s.sectionActionText}>
+                  {autoGen.isPending ? '…' : '⚡ Auto-generate'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={s.sectionAction}
+                onPress={() => router.push({
+                  pathname: '/create-match',
+                  params: { event_id: id, sport: eventMeta.sport_slug },
+                })}
+                activeOpacity={0.75}
+              >
+                <Text style={s.sectionActionText}>+ Add Match</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
@@ -337,16 +431,33 @@ export default function TournamentDetailScreen() {
           <View style={s.emptySection}>
             <Text style={s.emptyText}>No matches scheduled yet.</Text>
             {isOrganizer && (
-              <TouchableOpacity
-                style={s.limeCtaBtn}
-                onPress={() => router.push({
-                  pathname: '/create-match',
-                  params: { event_id: id, sport: eventMeta.sport_slug },
-                })}
-                activeOpacity={0.85}
-              >
-                <Text style={s.limeCtaText}>Create First Match →</Text>
-              </TouchableOpacity>
+              <>
+                {/* Auto-generate is the primary action and adding matches by hand
+                    is the fallback, not the other way round. One press produces
+                    the whole bracket — rounds, kick-off times, pitches and a
+                    referee per match — where "Add Match" builds one fixture with
+                    none of that wiring. */}
+                <TouchableOpacity
+                  style={[s.limeCtaBtn, autoGen.isPending && { opacity: 0.5 }]}
+                  disabled={autoGen.isPending}
+                  onPress={handleAutoGenerate}
+                  activeOpacity={0.85}
+                >
+                  {autoGen.isPending
+                    ? <ActivityIndicator color={C.limeText} />
+                    : <Text style={s.limeCtaText}>⚡ Auto-generate fixtures →</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => router.push({
+                    pathname: '/create-match',
+                    params: { event_id: id, sport: eventMeta.sport_slug },
+                  })}
+                  activeOpacity={0.7}
+                  style={{ marginTop: 12 }}
+                >
+                  <Text style={s.secondaryLink}>or add a single match manually</Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         ) : (
@@ -370,18 +481,14 @@ export default function TournamentDetailScreen() {
       </ScrollView>
 
       {/* ── STICKY BOTTOM ACTION ─────────────────────────────── */}
-      {(canRegister && eligibleTeams.length > 0) && (
+      {canRegister && (
         <View style={s.stickyBottom}>
           <TouchableOpacity
             style={[s.limeCtaBtn, { flex: 1, marginHorizontal: 0, flexDirection: 'row', justifyContent: 'center', gap: 8 }]}
             onPress={handleRegister}
-            disabled={registerMutation.isPending}
             activeOpacity={0.85}
           >
-            {registerMutation.isPending
-              ? <ActivityIndicator color={C.limeText} />
-              : <Text style={s.limeCtaText}>Register Your Team →</Text>
-            }
+            <Text style={s.limeCtaText}>Register Your Team →</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -435,6 +542,7 @@ const s = StyleSheet.create({
   },
   sectionLabel:      { color: C.t3, fontSize: 11, fontWeight: '700', letterSpacing: 2 },
   sectionAction:     { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, backgroundColor: C.s2, borderWidth: 1, borderColor: C.b1 },
+  secondaryLink: { color: C.t2, fontSize: 13, fontWeight: '600', textAlign: 'center' },
   sectionActionText: { color: C.lime, fontSize: 12, fontWeight: '700' },
 
   // Card container for teams
@@ -476,4 +584,22 @@ const s = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: C.b1,
     flexDirection: 'row', gap: 10,
   },
+})
+
+// A captain's own squad — the list they need to chase claim links from.
+const sq = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 10, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: C.b0,
+  },
+  name: { color: C.t1, fontSize: 14, fontWeight: '600' },
+  meta: { color: C.t3, fontSize: 11, marginTop: 1 },
+  sendBtn: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    borderWidth: 1, borderColor: C.lime + '77', backgroundColor: C.lime + '18',
+  },
+  sendText: { color: C.lime, fontSize: 11, fontWeight: '800' },
+  done: { color: C.t3, fontSize: 13, width: 14, textAlign: 'center' },
+  hint: { color: C.t3, fontSize: 11, lineHeight: 16, padding: 16, paddingTop: 12 },
 })

@@ -8,6 +8,9 @@ import { enqueueRatingJob } from '../../shared/queue/ratings.stream'
 import { emitFeedEvent } from '../feed/feed.service'
 import { checkAchievements } from '../achievements/achievements.service'
 import { assertMatchReferee } from '../matches/match.access'
+import { recomputeStandings } from '../events/bracket/standings'
+import { resolveFixtures } from '../events/bracket/resolver'
+import { notifyUsers, eventPlayerIds } from '../notifications/notify.service'
 
 const SubmitStatsBody = z.object({
   user_id: z.string().uuid(),
@@ -123,6 +126,24 @@ export async function scoresRoutes(app: FastifyInstance) {
       (a, b) => new Date(a.client_timestamp).getTime() - new Date(b.client_timestamp).getTime()
     )
 
+    // Fall back to the position the captain declared at registration.
+    //
+    // The scorecard only sends a position for the keeper — deliberately, to keep
+    // tournament-day scoring to a few taps — so without this every outfielder
+    // reaches the rating engine positionless and forfeits both the defender
+    // baseline and the clean-sheet share. An explicit position from the referee
+    // always wins: they can see who actually played at the back.
+    const declared = await db
+      .selectFrom('team_members')
+      .select(['user_id', 'team_id', 'position'])
+      .where('team_id', 'in', [...new Set(sorted.map((e) => e.team_id))])
+      .where('position', 'is not', null)
+      .execute()
+
+    const declaredByPlayer = new Map(
+      declared.map((d) => [`${d.team_id}:${d.user_id}`, d.position as string])
+    )
+
     // Upsert all entries — deduplicated by client_event_id
     const results = await db
       .insertInto('match_player_stats')
@@ -133,7 +154,8 @@ export async function scoresRoutes(app: FastifyInstance) {
           team_id: entry.team_id,
           sport_id: match.sport_id,
           stats: JSON.stringify(entry.stats) as unknown as Record<string, unknown>,
-          position: entry.position ?? null,
+          position:
+            entry.position ?? declaredByPlayer.get(`${entry.team_id}:${entry.user_id}`) ?? null,
           entered_by: request.userId,
           client_event_id: entry.client_event_id,
         }))
@@ -352,6 +374,45 @@ export async function scoresRoutes(app: FastifyInstance) {
  * records, enqueue rating computation, emit feed + achievements, notify realtime.
  * Shared by referee /complete and dual-captain /confirm.
  */
+/**
+ * Fire `rating_ready` exactly once, when the last match of a tournament is done.
+ *
+ * The condition is "no fixture is left without a completed match" — checked against
+ * event_fixtures rather than matches, because a knockout fixture whose teams are
+ * still unknown has no match row at all and would otherwise look finished.
+ */
+async function notifyIfTournamentFinished(
+  db: ReturnType<typeof getDb>,
+  eventId: string
+): Promise<void> {
+  const outstanding = await db
+    .selectFrom('event_fixtures as ef')
+    .leftJoin('matches as m', 'm.id', 'ef.match_id')
+    .select('ef.id')
+    .where('ef.event_id', '=', eventId)
+    .where((eb) =>
+      eb.or([eb('ef.match_id', 'is', null), eb('m.status', '!=', 'completed')])
+    )
+    .executeTakeFirst()
+
+  if (outstanding) return
+
+  const event = await db
+    .selectFrom('events')
+    .select(['id', 'name'])
+    .where('id', '=', eventId)
+    .executeTakeFirst()
+  if (!event) return
+
+  await notifyUsers({
+    userIds: await eventPlayerIds(eventId),
+    type: 'rating_ready',
+    title: 'Your rating is in',
+    body: `${event.name} is done. See how your rating moved and who topped the scoring.`,
+    data: { event_id: eventId },
+  })
+}
+
 async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<string | null> {
   const sport = await db
     .selectFrom('sports').select('slug').where('id', '=', match.sport_id).executeTakeFirstOrThrow()
@@ -369,6 +430,17 @@ async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<
   await enqueueRatingJob({
     match_id: match.id, sport_id: match.sport_id, triggered_at: new Date().toISOString(),
   })
+
+  // Tournament bookkeeping: rebuild the group table, then advance any bracket
+  // slot this result just decided. Both are no-ops for a standalone match with no
+  // event_id. The standings rebuild is a full recompute rather than an increment,
+  // so it is idempotent and self-heals if a previous completion was interrupted —
+  // finalizeMatch is not transactional, so that matters.
+  if (match.event_id) {
+    await recomputeStandings(match.event_id)
+    await resolveFixtures(match.event_id)
+    await notifyIfTournamentFinished(db, match.event_id)
+  }
 
   await updateTeamStats(db, { ...match, winner_team_id: winnerTeamId })
 

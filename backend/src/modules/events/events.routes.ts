@@ -1,13 +1,20 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requireAuth } from '../../shared/middleware/auth'
+import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
 import type { EventStatus } from '../../shared/db/types'
+import { roundLabel } from './bracket/round-label'
+import { goalsOf } from './score'
 
 const CreateEventBody = z.object({
   name: z.string().min(3).max(100),
   sport_slug: z.string(),
   format: z.enum(['knockout', 'league', 'round_robin', 'group_knockout', 'casual']),
+  // Players per side. `tier` is deliberately NOT accepted here — a new event has
+  // no referees yet, so nothing above 'amateur' could be authorised. Set it
+  // afterwards via PATCH /events/:id/tier. See spec §3.1.1.
+  match_format: z.enum(['5-a-side', '7-a-side', '11-a-side']).optional(),
+  match_duration_minutes: z.number().int().min(1).max(180).optional(),
   city: z.string().min(2).max(50),
   venue: z.string().max(100).optional(),
   description: z.string().max(500).optional(),
@@ -24,9 +31,29 @@ const RegisterTeamBody = z.object({
   group_no: z.string().optional(),
 })
 
+const EVENT_STATUSES = ['upcoming', 'registration', 'active', 'completed', 'cancelled'] as const
+const SetStatusBody = z.object({ status: z.enum(EVENT_STATUSES) })
+
+/**
+ * Which statuses an event may move to from where it is now.
+ *
+ * Registration opening and closing is the organizer's main lever, so
+ * upcoming↔registration is deliberately two-way — a turf owner who opened sign-ups
+ * early needs to be able to pull them back. Forward motion into `active` is not
+ * reversible, and `completed` is terminal: reopening a finished tournament would
+ * let its already-published results and ratings be edited after the fact.
+ */
+const STATUS_TRANSITIONS: Record<EventStatus, readonly EventStatus[]> = {
+  upcoming: ['registration', 'active', 'cancelled'],
+  registration: ['upcoming', 'active', 'cancelled'],
+  active: ['completed', 'cancelled'],
+  completed: [],
+  cancelled: [],
+}
+
 export async function eventsRoutes(app: FastifyInstance) {
-  // POST /events
-  app.post('/events', { preHandler: requireAuth }, async (request, reply) => {
+  // POST /events — only verified organizers (or admins) may run a tournament.
+  app.post('/events', { preHandler: requireRole('organizer', 'admin') }, async (request, reply) => {
     const body = CreateEventBody.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
@@ -47,6 +74,8 @@ export async function eventsRoutes(app: FastifyInstance) {
         sport_id: sport.id,
         organizer_id: request.userId,
         format: body.data.format,
+        match_format: body.data.match_format ?? null,
+        match_duration_minutes: body.data.match_duration_minutes ?? null,
         city: body.data.city,
         venue: body.data.venue ?? null,
         description: body.data.description ?? null,
@@ -136,16 +165,36 @@ export async function eventsRoutes(app: FastifyInstance) {
       .orderBy('et.seed', 'asc')
       .execute()
 
-    // Recent matches
-    const matches = await db
+    // Recent matches.
+    //
+    // Team names are joined in because without them the tournament screen had
+    // nothing to render but two blanks — it expected home_team_name/away_team_name
+    // and this endpoint never sent either.
+    const matchRows = await db
       .selectFrom('matches as m')
+      .leftJoin('teams as ht', 'ht.id', 'm.home_team_id')
+      .leftJoin('teams as at', 'at.id', 'm.away_team_id')
       .select([
         'm.id', 'm.round', 'm.status', 'm.scheduled_at', 'm.home_score', 'm.away_score',
         'm.home_team_id', 'm.away_team_id', 'm.winner_team_id',
+        'ht.name as home_team_name', 'at.name as away_team_name',
       ])
       .where('m.event_id', '=', id)
       .orderBy('m.scheduled_at', 'asc')
       .execute()
+
+    const matches = matchRows.map((m) => {
+      // Publish plain numbers and drop the raw jsonb. Sending `home_score` as
+      // `{ goals: 2 }` under a name that reads like a number is what produced
+      // "[object Object] — [object Object]" on the tournament screen.
+      const { home_score, away_score, ...rest } = m
+      return {
+        ...rest,
+        round_label: m.round ? roundLabel(m.round) : null,
+        home_goals: goalsOf(home_score),
+        away_goals: goalsOf(away_score),
+      }
+    })
 
     return { ...event, teams, matches }
   })
@@ -201,11 +250,21 @@ export async function eventsRoutes(app: FastifyInstance) {
       }
     }
 
+    // Seed by registration order, matching POST /events/:id/register. A NULL seed
+    // makes the bracket generator fall back to UUID order, silently defeating
+    // snake group distribution, byes for strong seeds, and the seed tie-break.
+    const { registered } = await db
+      .selectFrom('event_teams')
+      .select((eb) => eb.fn.countAll<string>().as('registered'))
+      .where('event_id', '=', eventId)
+      .executeTakeFirstOrThrow()
+
     await db
       .insertInto('event_teams')
       .values({
         event_id: eventId,
         team_id: body.data.team_id,
+        seed: Number(registered) + 1,
         group_no: body.data.group_no ?? null,
       })
       .onConflict((oc) => oc.doNothing())
@@ -215,21 +274,36 @@ export async function eventsRoutes(app: FastifyInstance) {
   })
 
   // PATCH /events/:id/status — organizer updates event status
-  app.patch('/events/:id/status', { preHandler: requireAuth }, async (request, reply) => {
-    const { id } = request.params as { id: string }
-    const { status } = request.body as { status: string }
-    const db = getDb()
+  app.patch(
+    '/events/:id/status',
+    { preHandler: requireRole('organizer', 'admin') },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      const body = SetStatusBody.safeParse(request.body)
+      if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
+      const db = getDb()
 
-    const event = await db
-      .selectFrom('events')
-      .select(['organizer_id', 'status'])
-      .where('id', '=', id)
-      .executeTakeFirst()
+      const event = await db
+        .selectFrom('events')
+        .select(['organizer_id', 'status'])
+        .where('id', '=', id)
+        .executeTakeFirst()
 
-    if (!event) return reply.code(404).send({ error: 'Not found' })
-    if (event.organizer_id !== request.userId) return reply.code(403).send({ error: 'Forbidden' })
+      if (!event) return reply.code(404).send({ error: 'Not found' })
+      if (event.organizer_id !== request.userId && request.userRole !== 'admin') {
+        return reply.code(403).send({ error: 'Forbidden — not your event' })
+      }
 
-    await db.updateTable('events').set({ status } as any).where('id', '=', id).execute()
-    return reply.code(204).send()
-  })
+      const next = body.data.status
+      if (next !== event.status && !STATUS_TRANSITIONS[event.status].includes(next)) {
+        return reply.code(409).send({
+          error: `Cannot go from '${event.status}' to '${next}'`,
+          allowed: STATUS_TRANSITIONS[event.status],
+        })
+      }
+
+      await db.updateTable('events').set({ status: next }).where('id', '=', id).execute()
+      return { event_id: id, status: next }
+    }
+  )
 }

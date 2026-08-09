@@ -14,6 +14,17 @@ import type { MatchTier } from '../tiers'
  */
 type JsonbColumn<T> = ColumnType<T, T, T>
 
+/**
+ * A jsonb column that also carries a DB-side `DEFAULT '{}'::jsonb`, so it may be
+ * omitted on insert and Postgres fills it in.
+ *
+ * These columns also carry that default and could use this type when next touched:
+ * `sports.stat_schema`, `match_player_stats.stats`, `achievements.data`,
+ * `feed_events.payload`. Converted so far: `events.rules`,
+ * `sport_profiles.career_stats`.
+ */
+type JsonbColumnWithDefault<T> = ColumnType<T, T | undefined, T>
+
 export interface SportTable {
   id: Generated<string>
   name: string
@@ -39,9 +50,23 @@ export interface SportStatSchema {
   event_types?: string[]
 }
 
-export type UserRole = 'player' | 'referee' | 'admin'
+/**
+ * The single source of truth for roles, as a runtime array so validators can be
+ * built from it. Adding `organizer` in Phase 1 updated the DB constraint and the
+ * type but missed a hand-written `z.enum([...])` in the dev-token route, which
+ * then refused to mint an organizer. Derive from this instead of retyping it.
+ */
+export const USER_ROLES = ['player', 'referee', 'organizer', 'admin'] as const
+export type UserRole = (typeof USER_ROLES)[number]
 export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
 export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
+export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'
+
+/** How one side of a fixture gets filled in. Stored as jsonb. */
+export type FixtureSource =
+  | { type: 'team'; team_id: string }
+  | { type: 'winner_of'; fixture_id: string }
+  | { type: 'qualifier'; seed: number }
 
 export interface UserTable {
   id: Generated<string>
@@ -75,8 +100,8 @@ export interface RefereeApplicationTable {
   certification: string | null
   bio: string | null
   status: Generated<'pending' | 'approved' | 'rejected'>
-  // 'initial' = becoming a referee; 'upgrade' = requesting a higher tier
-  request_type: Generated<'initial' | 'upgrade'>
+  // 'initial' = becoming a referee; 'upgrade' = higher tier; 'organizer' = run tournaments
+  request_type: Generated<'initial' | 'upgrade' | 'organizer'>
   requested_tier: MatchTier | null
   reviewed_by: string | null
   reviewed_at: Date | null
@@ -105,7 +130,7 @@ export interface SportProfileTable {
   form_rating: number | null
   matches_played: Generated<number>
   wins: Generated<number>
-  career_stats: JsonbColumn<Record<string, number>>
+  career_stats: JsonbColumnWithDefault<Record<string, number>>
   created_at: Generated<Date>
   updated_at: Generated<Date>
 }
@@ -131,6 +156,9 @@ export interface TeamMemberTable {
   team_id: string
   user_id: string
   role: 'captain' | 'vice_captain' | 'player' | 'coach'
+  // Captain-declared outfield role. Feeds match_player_stats.position when the
+  // referee records none — GK stays the referee's call at match time.
+  position: 'DEF' | 'MID' | 'FWD' | null
   jersey_no: number | null
   joined_at: Generated<Date>
   is_active: Generated<boolean>
@@ -142,6 +170,13 @@ export interface EventTable {
   sport_id: string
   organizer_id: string
   format: 'knockout' | 'league' | 'round_robin' | 'group_knockout' | 'casual'
+  // Competition grade of the whole tournament; every generated match inherits it.
+  // Capped by the lowest referee_tier among assigned referees — see spec §3.1.1.
+  tier: Generated<MatchTier>
+  // Players per side — distinct from `format`, which is the tournament structure.
+  match_format: MatchFormat | null
+  // Slot length for the generator; also Phase 4's rating match-weight input.
+  match_duration_minutes: number | null
   city: string
   venue: string | null
   description: string | null
@@ -151,7 +186,7 @@ export interface EventTable {
   max_teams: number | null
   entry_fee: Generated<number>
   prize_pool: Generated<number>
-  rules: JsonbColumn<Record<string, unknown>>
+  rules: JsonbColumnWithDefault<Record<string, unknown>>
   cover_url: string | null
   created_at: Generated<Date>
   updated_at: Generated<Date>
@@ -163,7 +198,38 @@ export interface EventTeamTable {
   seed: number | null
   group_no: string | null
   points: Generated<number>
+  played: Generated<number>
+  won: Generated<number>
+  drawn: Generated<number>
+  lost: Generated<number>
+  goals_for: Generated<number>
+  goals_against: Generated<number>
   registered_at: Generated<Date>
+}
+
+export interface EventFixtureTable {
+  id: Generated<string>
+  event_id: string
+  round: string
+  slot_no: number
+  pitch_label: string | null
+  scheduled_at: Date | null
+  referee_id: string | null
+  home_source: JsonbColumn<FixtureSource>
+  away_source: JsonbColumn<FixtureSource>
+  home_team_id: string | null
+  away_team_id: string | null
+  match_id: string | null
+  created_at: Generated<Date>
+  updated_at: Generated<Date>
+}
+
+export interface EventRefereeTable {
+  event_id: string
+  user_id: string
+  // Pins a referee to one pitch for the day (e.g. 'Pitch 1'). NULL = unassigned.
+  pitch_label: string | null
+  added_at: Generated<Date>
 }
 
 export interface MatchTable {
@@ -179,6 +245,9 @@ export interface MatchTable {
   completed_at: Date | null
   status: MatchStatus
   tier: Generated<MatchTier>
+  // Copied from the parent event at creation; drives the rating match-weight.
+  format: MatchFormat | null
+  duration_minutes: number | null
   referee_id: string | null
   home_score: JsonbColumn<Record<string, unknown>> | null
   away_score: JsonbColumn<Record<string, unknown>> | null
@@ -244,6 +313,27 @@ export interface FeedEventTable {
   created_at: Generated<Date>
 }
 
+export interface PushTokenTable {
+  id: Generated<string>
+  user_id: string
+  token: string
+  platform: 'ios' | 'android' | 'web' | null
+  device_id: string | null
+  created_at: Generated<Date>
+  updated_at: Generated<Date>
+}
+
+export interface NotificationTable {
+  id: Generated<string>
+  user_id: string
+  type: string
+  title: string
+  body: string
+  data: JsonbColumnWithDefault<Record<string, unknown>>
+  read_at: Date | null
+  created_at: Generated<Date>
+}
+
 export interface OrganizerScoreTable {
   user_id: string
   trust_score: Generated<number>
@@ -261,6 +351,10 @@ export interface Database {
   team_members: TeamMemberTable
   events: EventTable
   event_teams: EventTeamTable
+  event_referees: EventRefereeTable
+  event_fixtures: EventFixtureTable
+  push_tokens: PushTokenTable
+  notifications: NotificationTable
   matches: MatchTable
   match_player_stats: MatchPlayerStatsTable
   rating_history: RatingHistoryTable

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "firebase-admin": {
+      "command": "node",
+      "args": ["tools/firebase-mcp/dist/index.js"],
+      "env": {
+        "GCLOUD_ACCOUNT": "dvtchoudhary@gmail.com",
+        "GOOGLE_CLOUD_QUOTA_PROJECT": "allsports-dev-538e5"
+      }
+    }
+  }
+}

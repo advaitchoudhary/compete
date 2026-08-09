@@ -135,6 +135,11 @@ export async function matchesRoutes(app: FastifyInstance) {
       .select([
         'mps.user_id', 'u.name', 'u.avatar_url', 'mps.team_id',
         'mps.stats', 'mps.match_rating', 'mps.confirmed_by_captain',
+        // Needed so the scorecard can offer a claim link for the players who
+        // still need one. An unclaimed guest is the whole growth loop: they have
+        // a rating and no way to reach it until somebody sends them the link.
+        'u.is_guest',
+        'u.claimed_at',
       ])
       .where('mps.match_id', '=', id)
       .execute()

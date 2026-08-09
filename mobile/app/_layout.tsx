@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { View, ActivityIndicator } from 'react-native'
-import { Stack, useRouter, useSegments } from 'expo-router'
+import { Stack, useRouter, useSegments, usePathname } from 'expo-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -30,6 +30,7 @@ const queryClient = new QueryClient({
 function AuthGuard() {
   const { isAuthenticated, setAuth } = useAuthStore()
   const segments = useSegments()
+  const pathname = usePathname()
   const router = useRouter()
   const [ready, setReady] = useState(false)
 
@@ -50,12 +51,28 @@ function AuthGuard() {
     const inAuthGroup = segments[0] === 'auth'
     const hasToken = !!getToken()
 
+    // The public tournament page is the acquisition surface — a spectator with no
+    // account must be able to open the link. Bouncing it to /auth would defeat
+    // the entire point, so it is exempt from the guard.
+    // Both public entry points: the tournament page a spectator opens, and the
+    // claim link a guest opens. Neither has a session yet, so bouncing them to
+    // /auth would defeat the entire acquisition loop.
+    if (segments[0] === 'e' || segments[0] === 'claim') return
+
+    // The dev-only component preview signs itself in, so the guard must not
+    // bounce it to /auth first. Never reachable in a production build.
+    if (__DEV__ && segments[0] === 'dev-preview') return
+
     if (!hasToken && !isAuthenticated && !inAuthGroup) {
-      router.replace('/auth')
+      // Carry where they were trying to go, so a deep link into an authed screen
+      // (a shared /register-team/<id>, say) resumes after sign-in instead of
+      // dumping them on the home tab.
+      const next = pathname && pathname !== '/' ? `?next=${encodeURIComponent(pathname)}` : ''
+      router.replace(`/auth${next}` as any)
     } else if ((hasToken || isAuthenticated) && inAuthGroup) {
       router.replace('/(tabs)')
     }
-  }, [ready, isAuthenticated, segments])
+  }, [ready, isAuthenticated, segments, pathname])
 
   if (!ready) {
     return (
@@ -74,7 +91,17 @@ function AuthGuard() {
       <Stack.Screen name="referee-apply"     options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
       <Stack.Screen name="admin"             options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="tournament/[id]"   options={{ animation: 'slide_from_right' }} />
+      {/* Organizer control room — create → referees → grade → sign-ups → bracket. */}
+      <Stack.Screen name="organizer/index"          options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="organizer/[id]"           options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="organizer/referees/[id]"  options={{ animation: 'slide_from_right' }} />
+      {/* Squad registration — reached from the public link's "Enter your team". */}
+      <Stack.Screen name="register-team/[id]"        options={{ animation: 'slide_from_right' }} />
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
+      {/* Public, unauthenticated tournament page — shared with spectators. */}
+      <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />
+      {/* Public guest-claim link, opened from WhatsApp. */}
+      <Stack.Screen name="claim"             options={{ animation: 'fade' }} />
       <Stack.Screen name="form-tracker"      options={{ animation: 'slide_from_right' }} />
     </Stack>
   )
