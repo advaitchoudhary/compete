@@ -13,7 +13,9 @@ const CreateEventBody = z.object({
   // Players per side. `tier` is deliberately NOT accepted here — a new event has
   // no referees yet, so nothing above 'amateur' could be authorised. Set it
   // afterwards via PATCH /events/:id/tier. See spec §3.1.1.
-  match_format: z.enum(['5-a-side', '7-a-side', '11-a-side']).optional(),
+  // The number on the pitch, not an enum. 9-a-side is a real format that the old
+  // three-value list could not express; match_format is now generated from this.
+  players_per_side: z.number().int().min(3).max(11).optional(),
   match_duration_minutes: z.number().int().min(1).max(180).optional(),
   city: z.string().min(2).max(50),
   venue: z.string().max(100).optional(),
@@ -74,7 +76,7 @@ export async function eventsRoutes(app: FastifyInstance) {
         sport_id: sport.id,
         organizer_id: request.userId,
         format: body.data.format,
-        match_format: body.data.match_format ?? null,
+        players_per_side: body.data.players_per_side ?? null,
         match_duration_minutes: body.data.match_duration_minutes ?? null,
         city: body.data.city,
         venue: body.data.venue ?? null,

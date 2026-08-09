@@ -142,7 +142,7 @@ describe('Public tournament page', () => {
         sport_id: footballSportId,
         organizer_id: ORGANIZER_ID,
         format: 'knockout',
-        match_format: '5-a-side',
+        players_per_side: 5,
         match_duration_minutes: 12,
         city: 'Mumbai',
         venue: 'Powai Turf',

@@ -5,7 +5,7 @@ import type { FixtureSource } from '../../shared/db/types'
 import { rankStandings } from './bracket/standings'
 import { fixtureLabel, roundLabel } from './bracket/round-label'
 import { goalsOf } from './score'
-import { MIN_SQUAD } from './event-registration.routes'
+import { minSquadFor } from './event-registration.routes'
 
 /**
  * The public tournament page — the only unauthenticated surface in the API.
@@ -55,6 +55,7 @@ export async function publicEventRoutes(app: FastifyInstance) {
           'e.venue',
           'e.starts_at',
           'e.max_teams',
+          'e.players_per_side',
           'e.entry_fee',
           'e.prize_pool',
           'e.description',
@@ -210,7 +211,7 @@ export async function publicEventRoutes(app: FastifyInstance) {
         // must be. Neither is sensitive, and without them the page can only show
         // zeroes to the person we most want to convert.
         max_teams: event.max_teams,
-        min_squad: event.match_format ? MIN_SQUAD[event.match_format] : null,
+        min_squad: minSquadFor(event.players_per_side),
         teams: teams.map((t) => ({ name: t.name, group: t.group_no })),
         fixtures,
         standings,

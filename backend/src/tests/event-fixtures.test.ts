@@ -117,7 +117,7 @@ async function makeEvent(opts: {
       sport_id: footballSportId,
       organizer_id: ORGANIZER_ID,
       format: opts.format ?? 'group_knockout',
-      match_format: '5-a-side',
+      players_per_side: 5,
       match_duration_minutes: 12,
       city: 'Mumbai',
       status: 'registration',

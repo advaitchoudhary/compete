@@ -29,8 +29,13 @@ const FORMATS = [
   { value: 'group_knockout',  label: 'Groups + Knockout' },
 ]
 
-/** Players per side. Drives the squad minimum at registration. */
-const MATCH_FORMATS = ['5-a-side', '7-a-side', '11-a-side'] as const
+/**
+ * Players per side. Drives the squad minimum at registration and the defender cap.
+ *
+ * Stored as a number rather than an enum, so 9-a-side — a format turf owners
+ * actually run — is expressible without a migration per size.
+ */
+const PER_SIDE = [5, 6, 7, 8, 9, 11]
 
 /** Slot length. Also weights the rating — a 12-minute game moves Elo less. */
 const DURATIONS = [10, 12, 15, 20, 30, 45]
@@ -102,7 +107,7 @@ export default function CreateTournamentScreen() {
   const [sport, setSport] = useState(SPORTS_LIST[0])
   const [name, setName] = useState('')
   const [format, setFormat] = useState('group_knockout')
-  const [matchFormat, setMatchFormat] = useState<(typeof MATCH_FORMATS)[number]>('5-a-side')
+  const [perSide, setPerSide] = useState(5)
   const [duration, setDuration] = useState(12)
   const [city, setCity] = useState('')
   const [venue, setVenue] = useState('')
@@ -128,7 +133,7 @@ export default function CreateTournamentScreen() {
         // squad minimum at registration, duration sets the slot length and weights
         // the rating. Tier is deliberately NOT sent — it is not settable at
         // creation and is raised later, capped by the assigned referees.
-        match_format: matchFormat,
+        players_per_side: perSide,
         match_duration_minutes: duration,
       }
       if (venue.trim()) body.venue = venue.trim()
@@ -228,21 +233,24 @@ export default function CreateTournamentScreen() {
 
           {/* Players per side */}
           <Text style={s.sectionLabel}>PLAYERS PER SIDE</Text>
-          <View style={s.formatRow}>
-            {MATCH_FORMATS.map(mf => {
-              const active = matchFormat === mf
+          <View style={s.perSideRow}>
+            {PER_SIDE.map(n => {
+              const active = perSide === n
               return (
                 <TouchableOpacity
-                  key={mf}
-                  style={[s.formatPill, active && { backgroundColor: C.lime, borderColor: C.lime }]}
-                  onPress={() => setMatchFormat(mf)}
+                  key={n}
+                  style={[s.perSidePill, active && { backgroundColor: C.lime, borderColor: C.lime }]}
+                  onPress={() => setPerSide(n)}
                   activeOpacity={0.75}
                 >
-                  <Text style={[s.formatLabel, active && { color: C.limeText }]}>{mf}</Text>
+                  <Text style={[s.formatLabel, active && { color: C.limeText }]}>{n}v{n}</Text>
                 </TouchableOpacity>
               )
             })}
           </View>
+          <Text style={s.hint}>
+            Squads need at least {perSide} players, with up to {Math.floor((perSide - 1) / 2)} defenders.
+          </Text>
 
           {/* Match length */}
           <Text style={s.sectionLabel}>MATCH LENGTH</Text>
@@ -408,6 +416,11 @@ const s = StyleSheet.create({
 
   formatRow: {
     flexDirection: 'row', marginHorizontal: 16, gap: 10,
+  },
+  perSideRow: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: 16, gap: 8 },
+  perSidePill: {
+    paddingHorizontal: 16, alignItems: 'center', paddingVertical: 12, borderRadius: 12,
+    backgroundColor: C.s2, borderWidth: 1, borderColor: C.b1,
   },
   formatPill: {
     flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 12,

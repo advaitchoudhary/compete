@@ -139,7 +139,7 @@ describe('Team self-registration', () => {
         sport_id: footballSportId,
         organizer_id: ORGANIZER_ID,
         format: 'group_knockout',
-        match_format: '5-a-side',
+        players_per_side: 5,
         city: 'Mumbai',
         status: 'registration',
         max_teams: 2,
@@ -155,7 +155,7 @@ describe('Team self-registration', () => {
         sport_id: footballSportId,
         organizer_id: ORGANIZER_ID,
         format: 'knockout',
-        match_format: '5-a-side',
+        players_per_side: 5,
         city: 'Mumbai',
         status: 'upcoming',
       })

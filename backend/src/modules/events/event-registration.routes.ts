@@ -6,16 +6,17 @@ import { createGuest } from '../users/guest.service'
 import type { MatchFormat } from '../../shared/db/types'
 
 /**
- * Minimum players a squad must have, by a-side format. The captain counts as
- * one. Exported because Phase 3's fixture generator needs the same numbers.
+ * Minimum players a squad must have. It is simply the number on the pitch — a
+ * 7-a-side squad needs seven — which is why this replaced a lookup table with one
+ * row per size. Now any format works, including the 9-a-side that the old
+ * three-value enum could not express.
+ *
+ * The captain counts as one.
  */
-export const MIN_SQUAD: Record<MatchFormat, number> = {
-  '5-a-side': 5,
-  '7-a-side': 7,
-  '11-a-side': 11,
-}
+export const minSquadFor = (playersPerSide: number | null): number =>
+  playersPerSide ?? DEFAULT_MIN_SQUAD
 
-/** Fallback when an event predates events.match_format — the most permissive. */
+/** Fallback for an event created before the size was recorded. The most permissive. */
 const DEFAULT_MIN_SQUAD = 5
 
 /** Squad cap = minimum plus a bench. Keeps a roster from being a mailing list. */
@@ -33,12 +34,12 @@ const BENCH_ALLOWANCE = 7
  * The cap is roughly a real back line for the format, so an honest captain never
  * hits it and a dishonest one cannot inflate more than a real defence would earn.
  */
-const MAX_DEFENDERS: Record<MatchFormat, number> = {
-  '5-a-side': 2,
-  '7-a-side': 3,
-  '11-a-side': 5,
+const maxDefendersFor = (playersPerSide: number | null): number => {
+  const n = playersPerSide ?? DEFAULT_MIN_SQUAD
+  // A back line is a bit under half the outfield players: 5-a-side 2, 7-a-side 3,
+  // 9-a-side 4, 11-a-side 5. Reproduces the old table exactly and extends it.
+  return Math.floor((n - 1) / 2)
 }
-const DEFAULT_MAX_DEFENDERS = 3
 
 /**
  * GK is deliberately not offered. The referee marks the keeper at match time:
@@ -87,7 +88,7 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
 
     const event = await db
       .selectFrom('events')
-      .select(['id', 'status', 'max_teams', 'sport_id', 'match_format'])
+      .select(['id', 'status', 'max_teams', 'sport_id', 'match_format', 'players_per_side'])
       .where('id', '=', eventId)
       .executeTakeFirst()
 
@@ -119,7 +120,7 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
     const otherExistingIds = [...new Set(existingIds)].filter((id) => id !== request.userId)
     const squadSize = 1 + otherExistingIds.length + namedPlayers.length
 
-    const minSquad = event.match_format ? MIN_SQUAD[event.match_format] : DEFAULT_MIN_SQUAD
+    const minSquad = minSquadFor(event.players_per_side)
     if (squadSize < minSquad) {
       return reply.code(400).send({
         error: `A ${event.match_format ?? 'football'} squad needs at least ${minSquad} players (got ${squadSize}, including you as captain)`,
@@ -132,9 +133,7 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
     }
 
     // ── Defender cap ─────────────────────────────────────────────────────────
-    const maxDefenders = event.match_format
-      ? MAX_DEFENDERS[event.match_format]
-      : DEFAULT_MAX_DEFENDERS
+    const maxDefenders = maxDefendersFor(event.players_per_side)
     const declaredDefenders =
       body.data.players.filter((p) => p.position === 'DEF').length +
       (body.data.captain_position === 'DEF' ? 1 : 0)

@@ -60,7 +60,8 @@ export const USER_ROLES = ['player', 'referee', 'organizer', 'admin'] as const
 export type UserRole = (typeof USER_ROLES)[number]
 export type MatchStatus = 'scheduled' | 'live' | 'completed' | 'cancelled'
 export type EventStatus = 'upcoming' | 'registration' | 'active' | 'completed' | 'cancelled'
-export type MatchFormat = '5-a-side' | '7-a-side' | '11-a-side'
+/** Derived for display, e.g. '9-a-side'. players_per_side is the real value. */
+export type MatchFormat = `${number}-a-side`
 
 /** How one side of a fixture gets filled in. Stored as jsonb. */
 export type FixtureSource =
@@ -177,7 +178,9 @@ export interface EventTable {
   // Capped by the lowest referee_tier among assigned referees — see spec §3.1.1.
   tier: Generated<MatchTier>
   // Players per side — distinct from `format`, which is the tournament structure.
-  match_format: MatchFormat | null
+  // Generated in Postgres from players_per_side. Read-only — writing it is a
+  // database error, which is the point: two columns can no longer disagree.
+  match_format: ColumnType<MatchFormat | null, never, never>
   // Slot length for the generator; also Phase 4's rating match-weight input.
   match_duration_minutes: number | null
   // Pickup games only. match_format is a three-value enum and cannot say 9v9, so
