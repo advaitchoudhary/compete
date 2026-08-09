@@ -337,7 +337,7 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
     const members = await db
       .selectFrom('team_members as tm')
       .innerJoin('users as u', 'u.id', 'tm.user_id')
-      .select(['tm.team_id', 'u.id as user_id', 'u.name', 'u.is_guest', 'tm.role'])
+      .select(['tm.team_id', 'u.id as user_id', 'u.name', 'u.is_guest', 'u.claimed_at', 'tm.role', 'tm.position'])
       .where(
         'tm.team_id',
         'in',
@@ -345,10 +345,13 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
       )
       .execute()
 
-    const byTeam = new Map<string, Array<{ user_id: string; name: string; is_guest: boolean; role: string }>>()
+    const byTeam = new Map<string, Array<{ user_id: string; name: string; is_guest: boolean; claimed_at: Date | null; role: string; position: string | null }>>()
     for (const m of members) {
       const list = byTeam.get(m.team_id) ?? []
-      list.push({ user_id: m.user_id, name: m.name, is_guest: m.is_guest, role: m.role })
+      list.push({
+        user_id: m.user_id, name: m.name, is_guest: m.is_guest,
+        claimed_at: m.claimed_at, role: m.role, position: m.position,
+      })
       byTeam.set(m.team_id, list)
     }
 

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   ScrollView, View, Text, StyleSheet,
   TouchableOpacity, ActivityIndicator, RefreshControl,
@@ -10,6 +10,7 @@ import { useAuthStore } from '../../src/store/auth.store'
 import { api } from '../../src/api/client'
 import { C, SPORT } from '../../src/theme'
 import { confirm, notify } from '../../src/lib/dialog'
+import { Share, Platform } from 'react-native'
 import type { EventDetail, EventTeam, MatchSummary } from '../../src/types/tournament'
 
 const EVENT_STATUS_CFG: Record<string, { label: string; color: string; bg: string }> = {
@@ -166,6 +167,48 @@ export default function TournamentDetailScreen() {
    * kick-off, and refused with a readable reason if the event is not ready (no
    * refereed pitch, fewer than two teams, a grade its referees cannot officiate).
    */
+  /**
+   * The squads, with who is still an unclaimed guest.
+   *
+   * A captain is the right person to send claim links — they typed those names in,
+   * they have the numbers, and there is one of them per team against one referee
+   * per pitch. The backend already permitted it (they are `created_by` on every
+   * guest they entered, and captain of the shared team); only a surface was
+   * missing.
+   */
+  const { data: squadData } = useQuery({
+    queryKey: ['event-squads', id],
+    queryFn: () => api.get(`/events/${id}/teams`).then(r => r.data),
+    enabled: !!id && !!user,
+  })
+  const myTeam: any = (squadData?.teams ?? []).find((t: any) =>
+    (t.players ?? []).some((p: any) => p.user_id === user?.id && p.role === 'captain')
+  )
+  const [sendingClaim, setSendingClaim] = useState<string | null>(null)
+
+  const sendClaimLink = async (playerId: string, playerName: string) => {
+    setSendingClaim(playerId)
+    try {
+      const res = await api.post(`/guests/${playerId}/claim-link`, {})
+      const url: string = res.data.claim_url
+      const message =
+        `${playerName} — you played for ${myTeam?.name ?? 'our team'} and you've been rated ` +
+        `on every match. Claim your AllSports profile to keep it: ${url}`
+      if (Platform.OS === 'web') {
+        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+          await navigator.clipboard.writeText(message)
+          notify('Link copied', `Send it to ${playerName} on WhatsApp.`)
+        } else notify(`Claim link for ${playerName}`, url)
+      } else {
+        await Share.share({ message })
+      }
+    } catch (e: any) {
+      notify("Couldn't create the link", errText(e))
+    } finally {
+      setSendingClaim(null)
+    }
+  }
+
   const autoGen = useMutation({
     mutationFn: () => api.post(`/events/${id}/fixtures`, {}).then(r => r.data),
     onSuccess: (d: any) => {
@@ -306,6 +349,53 @@ export default function TournamentDetailScreen() {
               <TeamRow key={team.id} team={team} sportColor={spCfg.color} />
             ))}
           </View>
+        )}
+
+        {/* ── YOUR SQUAD (captains only) ────────────────────────
+            Every guest the captain typed in is a rated player with no way to
+            reach their rating until someone hands them the link. The captain has
+            their number; nobody else reliably does. */}
+        {myTeam && (
+          <>
+            <View style={s.sectionHeader}>
+              <Text style={s.sectionLabel}>YOUR SQUAD · {myTeam.name.toUpperCase()}</Text>
+            </View>
+            <View style={s.card}>
+              {(myTeam.players ?? []).map((p: any) => {
+                const claimable = p.is_guest && !p.claimed_at
+                return (
+                  <View key={p.user_id} style={sq.row}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={sq.name}>{p.name}</Text>
+                      <Text style={sq.meta}>
+                        {p.role === 'captain' ? 'Captain · you' : (p.position ?? 'no position')}
+                        {p.is_guest && !p.claimed_at ? ' · guest' : ''}
+                        {p.claimed_at ? ' · claimed' : ''}
+                      </Text>
+                    </View>
+                    {claimable ? (
+                      <TouchableOpacity
+                        style={sq.sendBtn}
+                        onPress={() => sendClaimLink(p.user_id, p.name)}
+                        disabled={sendingClaim === p.user_id}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={sq.sendText}>
+                          {sendingClaim === p.user_id ? '…' : 'Send link'}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <Text style={sq.done}>{p.is_guest ? '' : '✓'}</Text>
+                    )}
+                  </View>
+                )
+              })}
+              <Text style={sq.hint}>
+                Guests keep the rating they earn. Send each of them their link so it
+                stays theirs.
+              </Text>
+            </View>
+          </>
         )}
 
         {/* ── MATCHES SECTION ──────────────────────────────────── */}
@@ -494,4 +584,22 @@ const s = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: C.b1,
     flexDirection: 'row', gap: 10,
   },
+})
+
+// A captain's own squad — the list they need to chase claim links from.
+const sq = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 10, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: C.b0,
+  },
+  name: { color: C.t1, fontSize: 14, fontWeight: '600' },
+  meta: { color: C.t3, fontSize: 11, marginTop: 1 },
+  sendBtn: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    borderWidth: 1, borderColor: C.lime + '77', backgroundColor: C.lime + '18',
+  },
+  sendText: { color: C.lime, fontSize: 11, fontWeight: '800' },
+  done: { color: C.t3, fontSize: 13, width: 14, textAlign: 'center' },
+  hint: { color: C.t3, fontSize: 11, lineHeight: 16, padding: 16, paddingTop: 12 },
 })
