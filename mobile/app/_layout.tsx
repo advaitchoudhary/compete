@@ -57,7 +57,10 @@ function AuthGuard() {
     // Both public entry points: the tournament page a spectator opens, and the
     // claim link a guest opens. Neither has a session yet, so bouncing them to
     // /auth would defeat the entire acquisition loop.
-    if (segments[0] === 'e' || segments[0] === 'claim') return
+    // Public entry points: the tournament page, the pickup-game page and the
+    // claim link. None has a session yet, and bouncing them to /auth would defeat
+    // the whole point of sharing a link.
+    if (segments[0] === 'e' || segments[0] === 'g' || segments[0] === 'claim') return
 
     // The dev-only component preview signs itself in, so the guard must not
     // bounce it to /auth first. Never reachable in a production build.
@@ -100,6 +103,9 @@ function AuthGuard() {
       {/* Pickup games — the weekly kickabout beside the occasional tournament. */}
       <Stack.Screen name="create-game"               options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
       <Stack.Screen name="organizer/game/[id]"       options={{ animation: 'slide_from_right' }} />
+      <Stack.Screen name="join-game/[id]"            options={{ animation: 'slide_from_right' }} />
+      {/* Public, unauthenticated pickup-game page — shared into a group chat. */}
+      <Stack.Screen name="g/[id]"                    options={{ animation: 'fade' }} />
       <Stack.Screen name="match/[id]"        options={{ animation: 'slide_from_right' }} />
       {/* Public, unauthenticated tournament page — shared with spectators. */}
       <Stack.Screen name="e/[id]"            options={{ animation: 'fade' }} />
