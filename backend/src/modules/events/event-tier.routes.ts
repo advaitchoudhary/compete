@@ -27,11 +27,20 @@ export async function eventTierRoutes(app: FastifyInstance) {
       const db = getDb()
       const event = await db
         .selectFrom('events')
-        .select(['id', 'organizer_id', 'tier'])
+        .select(['id', 'organizer_id', 'tier', 'format'])
         .where('id', '=', id)
         .executeTakeFirst()
 
       if (!event) return reply.code(404).send({ error: 'Event not found' })
+
+      // A pickup game is amateur and stays amateur. The organizer picks the game,
+      // the teams and the opposition, so a gradeable pickup game would be the
+      // easiest way in the product to manufacture a rating.
+      if (event.format === 'casual') {
+        return reply.code(409).send({
+          error: 'Pickup games are always amateur grade — only tournaments can be graded',
+        })
+      }
       if (event.organizer_id !== request.userId && request.userRole !== 'admin') {
         return reply.code(403).send({ error: 'Forbidden — not your event' })
       }

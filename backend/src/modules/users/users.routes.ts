@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
+import { createGuest } from './guest.service'
 
 const UpdateProfileBody = z.object({
   name: z.string().min(1).max(80).optional(),
@@ -94,17 +95,16 @@ export async function usersRoutes(app: FastifyInstance) {
     const body = CreateGuestBody.safeParse(request.body)
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() })
 
-    const guest = await getDb()
-      .insertInto('users')
-      .values({
-        name: body.data.name,
-        city: body.data.city ?? null,
-        phone: null,
-        firebase_uid: null,
-        is_guest: true,
-        created_by: request.userId,
-      })
-      .returning(['id', 'name', 'city', 'is_guest', 'created_at'])
+    const db = getDb()
+    const { id } = await createGuest(db, {
+      name: body.data.name,
+      city: body.data.city,
+      createdBy: request.userId,
+    })
+    const guest = await db
+      .selectFrom('users')
+      .select(['id', 'name', 'city', 'is_guest', 'created_at'])
+      .where('id', '=', id)
       .executeTakeFirstOrThrow()
 
     return reply.code(201).send(guest)

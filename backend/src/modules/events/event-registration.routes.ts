@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../../shared/middleware/auth'
 import { getDb } from '../../shared/db/client'
+import { createGuest } from '../users/guest.service'
 import type { MatchFormat } from '../../shared/db/types'
 
 /**
@@ -235,18 +236,11 @@ export async function eventRegistrationRoutes(app: FastifyInstance) {
       const guestIds: string[] = []
       for (const entry of namedEntries) {
         const name = entry.name as string
-        const guest = await trx
-          .insertInto('users')
-          .values({
-            name,
-            city: body.data.city ?? null,
-            phone: null,
-            firebase_uid: null,
-            is_guest: true,
-            created_by: request.userId,
-          })
-          .returning('id')
-          .executeTakeFirstOrThrow()
+        const guest = await createGuest(trx, {
+          name,
+          city: body.data.city,
+          createdBy: request.userId,
+        })
         guestIds.push(guest.id)
         if (entry.position) positionByUserId.set(guest.id, entry.position)
       }

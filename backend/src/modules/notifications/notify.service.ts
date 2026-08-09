@@ -18,7 +18,13 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 /** Expo caps a single request at 100 messages. */
 const EXPO_BATCH_SIZE = 100
 
-export type NotificationType = 'fixtures_published' | 'match_next' | 'rating_ready'
+export type NotificationType =
+  | 'fixtures_published'
+  | 'match_next'
+  | 'rating_ready'
+  // Moved off a pickup game's waitlist. The one message a player must not miss —
+  // they were not playing, and now they are.
+  | 'game_promoted'
 
 export interface NotifyInput {
   userIds: string[]

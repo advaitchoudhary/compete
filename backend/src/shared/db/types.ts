@@ -138,6 +138,9 @@ export interface SportProfileTable {
 export interface TeamTable {
   id: Generated<string>
   name: string
+  // Drawn for a single pickup game and never played again. Excluded from team
+  // listings and from win/loss accounting, which would otherwise be meaningless.
+  is_ad_hoc: Generated<boolean>
   sport_id: string
   city: string | null
   organizer_id: string
@@ -158,7 +161,7 @@ export interface TeamMemberTable {
   role: 'captain' | 'vice_captain' | 'player' | 'coach'
   // Captain-declared outfield role. Feeds match_player_stats.position when the
   // referee records none — GK stays the referee's call at match time.
-  position: 'DEF' | 'MID' | 'FWD' | null
+  position: SquadPosition | null
   jersey_no: number | null
   joined_at: Generated<Date>
   is_active: Generated<boolean>
@@ -177,6 +180,9 @@ export interface EventTable {
   match_format: MatchFormat | null
   // Slot length for the generator; also Phase 4's rating match-weight input.
   match_duration_minutes: number | null
+  // Pickup games only. match_format is a three-value enum and cannot say 9v9, so
+  // the number is stored instead. Capacity is always 2x and never stored.
+  players_per_side: number | null
   city: string
   venue: string | null
   description: string | null
@@ -206,6 +212,22 @@ export interface EventTeamTable {
   goals_against: Generated<number>
   registered_at: Generated<Date>
 }
+
+/** Individuals signed up to a pickup game. Tournaments use EventTeamTable. */
+export interface EventPlayerTable {
+  event_id: string
+  user_id: string
+  /** NULL = joined themselves; otherwise the joiner who brought them. Party key. */
+  added_by: string | null
+  status: Generated<PickupStatus>
+  position: SquadPosition | null
+  joined_at: Generated<Date>
+  /** Which side they were drawn onto; NULL until the game is drawn. */
+  team_id: string | null
+}
+
+export type PickupStatus = 'confirmed' | 'waitlist' | 'withdrawn'
+export type SquadPosition = 'DEF' | 'MID' | 'FWD'
 
 export interface EventFixtureTable {
   id: Generated<string>
@@ -351,6 +373,7 @@ export interface Database {
   team_members: TeamMemberTable
   events: EventTable
   event_teams: EventTeamTable
+  event_players: EventPlayerTable
   event_referees: EventRefereeTable
   event_fixtures: EventFixtureTable
   push_tokens: PushTokenTable
