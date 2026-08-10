@@ -375,6 +375,39 @@ export async function scoresRoutes(app: FastifyInstance) {
  * Shared by referee /complete and dual-captain /confirm.
  */
 /**
+ * A pickup game is over when its one match is over.
+ *
+ * Nothing was moving it on. A tournament advances through the fixture resolver and
+ * ends when the bracket runs out; a casual game has no fixtures, so it sat at
+ * 'active' forever — listed as still running in the organizer's hub, and still
+ * offering to redraw sides for a match that had already been played and rated.
+ *
+ * Scoped to `format = 'casual'` so it can never touch a tournament, and guarded on
+ * there being no unfinished match so a redraw or a replayed completion cannot close
+ * a game that is still going.
+ */
+export async function closeCasualGame(
+  db: ReturnType<typeof getDb>,
+  eventId: string
+): Promise<void> {
+  const unfinished = await db
+    .selectFrom('matches')
+    .select('id')
+    .where('event_id', '=', eventId)
+    .where('status', '!=', 'completed')
+    .executeTakeFirst()
+  if (unfinished) return
+
+  await db
+    .updateTable('events')
+    .set({ status: 'completed' })
+    .where('id', '=', eventId)
+    .where('format', '=', 'casual')
+    .where('status', '=', 'active')
+    .execute()
+}
+
+/**
  * Fire `rating_ready` exactly once, when the last match of a tournament is done.
  *
  * The condition is "no fixture is left without a completed match" — checked against
@@ -440,6 +473,7 @@ async function finalizeMatch(db: ReturnType<typeof getDb>, match: any): Promise<
     await recomputeStandings(match.event_id)
     await resolveFixtures(match.event_id)
     await notifyIfTournamentFinished(db, match.event_id)
+    await closeCasualGame(db, match.event_id)
   }
 
   await updateTeamStats(db, { ...match, winner_team_id: winnerTeamId })

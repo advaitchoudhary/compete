@@ -163,8 +163,19 @@ export async function gamesRoutes(app: FastifyInstance) {
     const capacity = capacityOf(game.players_per_side)
     const confirmed = countConfirmed(roster)
 
+    // The one match, once it exists. The control room needs its status to know
+    // whether a redraw is still possible — the draw endpoint refuses once anything
+    // has kicked off, so without this the screen offers a button that can only fail —
+    // and needs its id to send the organizer to the scorecard afterwards.
+    const match = await db
+      .selectFrom('matches')
+      .select(['id', 'status', 'home_score', 'away_score', 'winner_team_id'])
+      .where('event_id', '=', id)
+      .executeTakeFirst()
+
     return {
       game: { ...game, capacity },
+      match: match ?? null,
       confirmed_count: confirmed,
       spots_left: Math.max(capacity - confirmed, 0),
       // Position in the queue, so the UI can say "you are third in line".

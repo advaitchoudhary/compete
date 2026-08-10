@@ -37,6 +37,14 @@ type GameDetail = {
     players_per_side: number | null; match_duration_minutes: number | null
     starts_at: string | null; capacity: number; tier: string; organizer_id: string
   }
+  /** Null until the sides are drawn. */
+  match: {
+    id: string
+    status: string
+    home_score: { goals?: number } | null
+    away_score: { goals?: number } | null
+    winner_team_id: string | null
+  } | null
   confirmed_count: number
   spots_left: number
   waitlist_order: string[]
@@ -111,6 +119,14 @@ export default function GameControlRoom() {
   const isFull = data.spots_left === 0
   const drawn = g.status === 'active' || g.status === 'completed'
   const sides = [...new Set(confirmed.map(p => p.team_id).filter(Boolean))] as string[]
+  // Three states, not two. A drawn game can still be redrawn; one that has kicked
+  // off cannot, and one that has been played is finished with.
+  const kickedOff = Boolean(data.match && data.match.status !== 'scheduled')
+  const played = data.match?.status === 'completed'
+  const score =
+    played && data.match?.home_score && data.match?.away_score
+      ? `${data.match.home_score.goals ?? 0} – ${data.match.away_score.goals ?? 0}`
+      : null
 
   const shareLink = async () => {
     const base = Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.origin : ''
@@ -326,19 +342,46 @@ export default function GameControlRoom() {
           </View>
         ) : (
           <View style={s.card}>
-            <Text style={s.drawTitle}>Sides are drawn</Text>
-            <Text style={s.drawBody}>
-              The referee scores it from their own phone. Ratings follow.
+            <Text style={s.drawTitle}>
+              {kickedOff ? (played ? 'Played' : 'Under way') : 'Sides are drawn'}
             </Text>
-            <TouchableOpacity
-              style={s.secondaryBtn}
-              onPress={() => run('redraw', () => api.post(`/games/${id}/draw`, {}))}
-              activeOpacity={0.85}
-            >
-              <Text style={s.secondaryText}>
-                {busy === 'redraw' ? '…' : 'Redraw the sides'}
-              </Text>
-            </TouchableOpacity>
+            <Text style={s.drawBody}>
+              {played
+                ? 'Everyone who played has a rating from it. Open the scorecard to see how it went.'
+                : kickedOff
+                  ? 'The referee is scoring it now.'
+                  : 'The referee scores it from their own phone. Ratings follow.'}
+            </Text>
+
+            {played && score && (
+              <Text style={s.finalScore}>{score}</Text>
+            )}
+
+            {data.match && (
+              <TouchableOpacity
+                style={s.secondaryBtn}
+                onPress={() => router.push(`/match/${data.match!.id}`)}
+                activeOpacity={0.85}
+              >
+                <Text style={s.secondaryText}>
+                  {played ? 'Open the scorecard' : 'Follow the match'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Redrawing tears down the match, so it is only on offer while nothing
+                has kicked off — which is exactly what the endpoint enforces. */}
+            {!kickedOff && (
+              <TouchableOpacity
+                style={s.secondaryBtn}
+                onPress={() => run('redraw', () => api.post(`/games/${id}/draw`, {}))}
+                activeOpacity={0.85}
+              >
+                <Text style={s.secondaryText}>
+                  {busy === 'redraw' ? '…' : 'Redraw the sides'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
       </ScrollView>
@@ -426,4 +469,8 @@ const s = StyleSheet.create({
     alignItems: 'center', borderWidth: 1, borderColor: C.b1,
   },
   secondaryText: { color: C.t1, fontSize: 13, fontFamily: FONT.semibold },
+  finalScore: {
+    color: C.lime, fontSize: 30, fontFamily: FONT.black,
+    letterSpacing: -1, textAlign: 'center', paddingVertical: 4,
+  },
 })

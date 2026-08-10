@@ -22,6 +22,7 @@ import Fastify from 'fastify'
 import jwt from '@fastify/jwt'
 import { gamesRoutes } from '../modules/games/games.routes'
 import { eventTierRoutes } from '../modules/events/event-tier.routes'
+import { closeCasualGame } from '../modules/scores/scores.routes'
 import { getDb } from '../shared/db/client'
 import { notifyUsers } from '../modules/notifications/notify.service'
 
@@ -387,6 +388,75 @@ describe('Pickup games — drawing the sides', () => {
       .selectFrom('event_players').select(['team_id'])
       .where('event_id', '=', id).where('status', '=', 'confirmed').execute()
     expect(drawn.every((p) => p.team_id !== null)).toBe(true)
+  })
+
+  /**
+   * The control room reads this to decide whether a redraw is still on offer. It
+   * used to have no idea a match existed, so it kept offering one long after the
+   * game had been played — a button whose only possible outcome was a 409.
+   */
+  it('the game detail carries the match once the sides are drawn', async () => {
+    const id = await fillAndRef(3)
+    await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: REFEREE },
+    })
+
+    const before = await app.inject({
+      method: 'GET', url: `/v1/games/${id}`, headers: auth(ORGANIZER),
+    })
+    expect(before.json().match).toBeNull()
+
+    const draw = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    const after = await app.inject({
+      method: 'GET', url: `/v1/games/${id}`, headers: auth(ORGANIZER),
+    })
+    expect(after.json().match.id).toBe(draw.json().match_id)
+    expect(after.json().match.status).toBe('scheduled')
+  })
+
+  it('a played pickup game is closed out, and a tournament is left alone', async () => {
+    const id = await fillAndRef(3)
+    await app.inject({
+      method: 'POST', url: `/v1/games/${id}/referee`,
+      headers: auth(ORGANIZER), payload: { user_id: REFEREE },
+    })
+    const draw = await app.inject({
+      method: 'POST', url: `/v1/games/${id}/draw`, headers: auth(ORGANIZER),
+    })
+    const db = getDb()
+
+    // Drawing sets it active. Nothing was ever moving it on from there, so the
+    // organizer's hub listed a finished kickabout as still running.
+    const statusOf = async (eventId: string) =>
+      (await db.selectFrom('events').select('status')
+        .where('id', '=', eventId).executeTakeFirstOrThrow()).status
+
+    expect(await statusOf(id)).toBe('active')
+
+    // While the match is unplayed the game stays open.
+    await closeCasualGame(db, id)
+    expect(await statusOf(id)).toBe('active')
+
+    await db.updateTable('matches').set({ status: 'completed' })
+      .where('id', '=', draw.json().match_id).execute()
+    await closeCasualGame(db, id)
+    expect(await statusOf(id)).toBe('completed')
+
+    // A tournament ends when its bracket runs out, not when one match does.
+    const tourney = await db
+      .insertInto('events')
+      .values({
+        name: 'Not A Kickabout', sport_id: footballId, organizer_id: ORGANIZER,
+        format: 'league', tier: 'amateur', city: 'Pune', status: 'active',
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow()
+    await closeCasualGame(db, tourney.id)
+    expect(await statusOf(tourney.id)).toBe('active')
+    await db.deleteFrom('events').where('id', '=', tourney.id).execute()
   })
 
   it('redrawing replaces the previous sides rather than stacking them', async () => {
